@@ -1,29 +1,240 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-cn">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Random WhatsApp Redirect</title>
+    <title>链接分配器</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .container {
+            max-width: 700px;
+            margin: 0 auto;
+        }
+        .mode-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .tab-button {
+            flex: 1;
+            padding: 12px;
+            border: 2px solid #ddd;
+            background: white;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 16px;
+            transition: all 0.3s;
+        }
+        .tab-button.active {
+            background: #0066cc;
+            color: white;
+            border-color: #0066cc;
+        }
+        .tab-content {
+            display: none;
+            background: white;
+            padding: 20px;
+            border-radius: 4px;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        h2 {
+            margin-bottom: 15px;
+            color: #333;
+        }
+        textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+            resize: vertical;
+        }
+        button {
+            background: #0066cc;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 10px;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #0051a8;
+        }
+        #output {
+            margin-top: 20px;
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 4px;
+            border: 1px solid #e0e0e0;
+        }
+        .link-box {
+            background: white;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            border-left: 4px solid #0066cc;
+        }
+        .link-box label {
+            display: block;
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .link-box input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            font-family: monospace;
+            font-size: 13px;
+        }
+        .link-box button {
+            margin-top: 8px;
+            width: 100%;
+            background: #28a745;
+            font-size: 14px;
+            padding: 8px;
+        }
+        .link-box button:hover {
+            background: #218838;
+        }
+        .copy-btn {
+            background: #28a745;
+        }
+        .copy-btn:hover {
+            background: #218838;
+        }
+        .success-msg {
+            color: #28a745;
+            margin-top: 10px;
+            font-size: 14px;
+        }
+        .info-text {
+            background: #e8f4f8;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-size: 14px;
+            color: #0056b3;
+        }
+    </style>
 </head>
 <body>
-    <script>
-var links = [
-"https://wa.me/17248448125?text=START",
-"https://wa.me/16068252393?text=Startverification",
-"https://wa.me/14635839303?text=START",
-"https://wa.me/19208177420?text=START",
-"https://wa.me/15417811693?text=Startverification",
-"https://wa.me/14633231513?text=Startverification",
-"https://wa.me/18313887454?text=START",
-"https://wa.me/16362601891?text=START",
-"https://wa.me/15858558494?text=Startverification",
-"https://wa.me/18059978610?text=Startverification",
-"https://wa.me/19793496588?text=Startverification",
-"https://wa.me/19793496588?text=Startverification",
-"https://wa.me/19498820911?text=START"
-];
+    <div class="container">
+        <h1>🔗 链接分配器</h1>
+        
+        <div class="mode-selector">
+            <button class="tab-button active" onclick="switchTab('merge')">合并链接</button>
+            <button class="tab-button" onclick="switchTab('distribute')">分配链接</button>
+        </div>
 
-location.href = links[Math.floor(Math.random() * links.length)];
-</script>
+        <!-- 合并链接模式 -->
+        <div id="merge" class="tab-content active">
+            <h2>合并链接</h2>
+            <div class="info-text">
+                📌 输入多个链接，生成一个特殊URL。用户访问该URL后会按顺序获取每个链接。
+            </div>
+            <textarea id="mergeInput" rows="8" placeholder="输入链接，每行一个，例如：
+https://wa.me/123?text=START
+https://wa.me/456?text=START
+https://wa.me/789?text=START"></textarea>
+            <button onclick="mergeLinks()">生成合并链接</button>
+            <div id="mergeOutput"></div>
+        </div>
+
+        <!-- 分配链接模式 -->
+        <div id="distribute" class="tab-content">
+            <h2>分配链接</h2>
+            <div class="info-text">
+                📌 粘贴已生成的合并链接，它会按顺序分配每个链接给用户。
+            </div>
+            <label>检查当前链接：</label>
+            <div id="distributeOutput" style="margin-top: 10px;"></div>
+        </div>
+    </div>
+
+    <script>
+        function switchTab(tab) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.tab-button').forEach(el => el.classList.remove('active'));
+            document.getElementById(tab).classList.add('active');
+            
+            const buttons = document.querySelectorAll('.tab-button');
+            buttons.forEach(btn => {
+                if ((tab === 'merge' && btn.textContent.includes('合并')) ||
+                    (tab === 'distribute' && btn.textContent.includes('分配'))) {
+                    btn.classList.add('active');
+                }
+            });
+        }
+
+        function mergeLinks() {
+            try {
+                const input = document.getElementById('mergeInput').value.trim();
+                if (!input) {
+                    alert('请输入至少一个链接！');
+                    return;
+                }
+                
+                const links = input.split('\n')
+                    .map(link => link.trim())
+                    .filter(link => link && link.startsWith('http'));
+                
+                if (links.length === 0) {
+                    alert('未找到有效的链接！请确保每个链接都以http://或https://开头');
+                    return;
+                }
+
+                // 生成极短的ID
+                const id = Math.random().toString(36).substring(2, 8);
+                localStorage.setItem('links_' + id, JSON.stringify(links));
+                
+                // 生成完整的短链接URL
+                const baseUrl = window.location.origin + window.location.pathname.split('/').slice(0, -1).join('/') + '/';
+                const mergedUrl = baseUrl + 'redirect.html#' + id;
+
+                // 显示结果
+                const outputDiv = document.getElementById('mergeOutput');
+                outputDiv.innerHTML = `
+                    <div class="link-box">
+                        <label>✅ 成功生成短链接！(${links.length} 个)</label>
+                        <input type="text" value="${mergedUrl}" readonly style="margin-top: 10px; font-size: 14px;">
+                        <button class="copy-btn" onclick="copyToClipboard(this)">📋 复制链接</button>
+                        <div class="success-msg">✨ 极短链接已生成，用户每次访问直接跳转到下一个网址</div>
+                    </div>
+                `;
+
+            } catch (error) {
+                console.error('生成链接时出错：', error);
+                alert('生成链接时出错：' + error.message);
+            }
+        }
+
+        function copyToClipboard(button) {
+            const input = button.previousElementSibling;
+            input.select();
+            document.execCommand('copy');
+            const oldText = button.textContent;
+            button.textContent = '✅ 已复制！';
+            setTimeout(() => {
+                button.textContent = oldText;
+            }, 2000);
+        }
+    </script>
 </body>
 </html>

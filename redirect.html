@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>链接转发中...</title>
+</head>
+<body>
+    <script>
+        // 立即执行 - 不显示任何界面
+        (function() {
+            const hash = window.location.hash.substring(1);
+            if (hash) {
+                const stored = localStorage.getItem('links_' + hash);
+                if (stored) {
+                    try {
+                        const links = JSON.parse(stored);
+                        const index = parseInt(sessionStorage.getItem(hash + '_idx') || '0');
+                        if (index < links.length) {
+                            sessionStorage.setItem(hash + '_idx', index + 1);
+                            window.location.href = links[index];
+                        } else {
+                            sessionStorage.removeItem(hash + '_idx');
+                            document.body.innerHTML = '✅ 已分配完所有链接';
+                        }
+                    } catch(e) {}
+                }
+            }
+        })();
+    </script>
+</body>
+</html>
