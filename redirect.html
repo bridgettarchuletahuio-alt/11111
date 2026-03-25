@@ -31,23 +31,22 @@
         }
 
         async function getOnlineNextUrl(id) {
-            const getUrl = `${SCRIPT_URL}?action=next&id=${encodeURIComponent(id)}`;
-            const getResp = await fetch(getUrl, { method: 'GET', redirect: 'follow' });
-            const getText = await getResp.text();
-            let nextUrl = extractNextUrl(tryParseJson(getText));
-
-            if (nextUrl) return nextUrl;
-
             const postResp = await fetch(SCRIPT_URL, {
                 method: 'POST',
                 redirect: 'follow',
                 headers: {
                     'Content-Type': 'text/plain;charset=utf-8'
                 },
-                body: JSON.stringify({ action: 'next', id })
+                body: JSON.stringify({ id })
             });
             const postText = await postResp.text();
-            nextUrl = extractNextUrl(tryParseJson(postText));
+            const parsed = tryParseJson(postText);
+
+            if (parsed && typeof parsed === 'object' && parsed.error) {
+                throw new Error(parsed.error);
+            }
+
+            const nextUrl = extractNextUrl(parsed);
 
             if (!nextUrl) {
                 throw new Error('在线表格接口未返回可跳转链接');

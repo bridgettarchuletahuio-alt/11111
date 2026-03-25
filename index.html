@@ -192,8 +192,13 @@ https://wa.me/789?text=START"></textarea>
                 (payload.data && (payload.data.id || payload.data.hash || payload.data.key)) || null;
         }
 
+        function makeShortId() {
+            return Math.random().toString(36).substring(2, 8);
+        }
+
         async function createOnlineSet(links) {
-            const payload = { action: 'create', links };
+            const id = makeShortId();
+            const payload = { id, links };
 
             const postResp = await fetch(SCRIPT_URL, {
                 method: 'POST',
@@ -205,20 +210,13 @@ https://wa.me/789?text=START"></textarea>
             });
 
             const postText = await postResp.text();
-            let id = extractIdFromResponse(tryParseJson(postText));
+            const parsed = tryParseJson(postText);
 
-            if (id) return id;
-
-            // 兼容部分 Apps Script 仅支持 GET 参数的实现。
-            const getUrl = `${SCRIPT_URL}?action=create&links=${encodeURIComponent(links.join('\n'))}`;
-            const getResp = await fetch(getUrl, { method: 'GET', redirect: 'follow' });
-            const getText = await getResp.text();
-            id = extractIdFromResponse(tryParseJson(getText));
-
-            if (!id) {
-                throw new Error('在线表格接口未返回可用ID，请检查 Apps Script 返回格式');
+            if (parsed && typeof parsed === 'object' && parsed.error) {
+                throw new Error(parsed.error);
             }
 
+            // 接口写入成功即可，ID 由前端预先生成并作为共享键。
             return id;
         }
 
