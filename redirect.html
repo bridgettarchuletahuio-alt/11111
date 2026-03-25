@@ -6,24 +6,30 @@
 </head>
 <body>
     <script>
-        // 立即执行 - 不显示任何界面
         (function() {
             const hash = window.location.hash.substring(1);
-            if (hash) {
-                const stored = localStorage.getItem('links_' + hash);
-                if (stored) {
-                    try {
-                        const links = JSON.parse(stored);
-                        const index = parseInt(sessionStorage.getItem(hash + '_idx') || '0');
-                        if (index < links.length) {
-                            sessionStorage.setItem(hash + '_idx', index + 1);
-                            window.location.href = links[index];
-                        } else {
-                            sessionStorage.removeItem(hash + '_idx');
-                            document.body.innerHTML = '✅ 已分配完所有链接';
-                        }
-                    } catch(e) {}
-                }
+            
+            if (!hash) return;
+            
+            const stored = localStorage.getItem('links_' + hash);
+            if (!stored) return;
+            
+            try {
+                const links = JSON.parse(stored);
+                if (!Array.isArray(links) || links.length === 0) return;
+                
+                // 获取当前索引并计算下一个索引（循环）
+                const index = parseInt(sessionStorage.getItem(hash + '_idx') || '0');
+                const nextIndex = (index + 1) % links.length;
+                
+                // 保存下一个索引
+                sessionStorage.setItem(hash + '_idx', nextIndex);
+                
+                // 直接跳转到当前链接（无任何提示或错误信息）
+                window.location.href = links[index];
+            } catch(e) {
+                // 发生错误时也不显示任何提示，直接返回
+                return;
             }
         })();
     </script>

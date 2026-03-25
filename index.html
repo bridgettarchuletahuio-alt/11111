@@ -163,7 +163,9 @@ https://wa.me/789?text=START"></textarea>
             <div class="info-text">
                 📌 粘贴已生成的合并链接，它会按顺序分配每个链接给用户。
             </div>
-            <label>检查当前链接：</label>
+            <label>粘贴你的短链接：</label>
+            <textarea id="distributeInput" rows="3" placeholder="例如：https://example.com/redirect.html#abc123" style="margin-top: 10px;"></textarea>
+            <button onclick="openDistributedLink()" style="width: 100%; margin-top: 10px;">🚀 打开链接</button>
             <div id="distributeOutput" style="margin-top: 10px;"></div>
         </div>
     </div>
@@ -234,6 +236,34 @@ https://wa.me/789?text=START"></textarea>
             setTimeout(() => {
                 button.textContent = oldText;
             }, 2000);
+        }
+
+        function openDistributedLink() {
+            const input = document.getElementById('distributeInput').value.trim();
+            if (!input) {
+                alert('请粘贴链接！');
+                return;
+            }
+            
+            // 从链接中提取 hash (ID)
+            const hashMatch = input.match(/#(.+?)(?:\?|$)/);
+            const hash = hashMatch ? hashMatch[1] : null;
+            
+            if (!hash) {
+                alert('无效的链接格式！请确保链接中有 # 符号');
+                return;
+            }
+            
+            // 检查这个链接的数据是否存在
+            const stored = localStorage.getItem('links_' + hash);
+            if (!stored) {
+                alert('链接已过期或不存在！');
+                return;
+            }
+            
+            // 打开 redirect 页面
+            const baseUrl = window.location.origin + window.location.pathname.split('/').slice(0, -1).join('/') + '/';
+            window.location.href = baseUrl + 'redirect.html#' + hash;
         }
     </script>
 </body>
