@@ -171,6 +171,57 @@ https://wa.me/789?text=START"></textarea>
     </div>
 
     <script>
+        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby2paXv3sGLcLhwnLSee3oN7IG_Uz09hayIfPcBHVAFtGzEOogXnJam1gq-f3ThcHBT/exec';
+
+        function tryParseJson(text) {
+            try {
+                return JSON.parse(text);
+            } catch (e) {
+                return text;
+            }
+        }
+
+        function extractIdFromResponse(payload) {
+            if (!payload) return null;
+            if (typeof payload === 'string') {
+                const trimmed = payload.trim();
+                return trimmed || null;
+            }
+
+            return payload.id || payload.hash || payload.key || payload.code ||
+                (payload.data && (payload.data.id || payload.data.hash || payload.data.key)) || null;
+        }
+
+        async function createOnlineSet(links) {
+            const payload = { action: 'create', links };
+
+            const postResp = await fetch(SCRIPT_URL, {
+                method: 'POST',
+                redirect: 'follow',
+                headers: {
+                    'Content-Type': 'text/plain;charset=utf-8'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            const postText = await postResp.text();
+            let id = extractIdFromResponse(tryParseJson(postText));
+
+            if (id) return id;
+
+            // 兼容部分 Apps Script 仅支持 GET 参数的实现。
+            const getUrl = `${SCRIPT_URL}?action=create&links=${encodeURIComponent(links.join('\n'))}`;
+            const getResp = await fetch(getUrl, { method: 'GET', redirect: 'follow' });
+            const getText = await getResp.text();
+            id = extractIdFromResponse(tryParseJson(getText));
+
+            if (!id) {
+                throw new Error('在线表格接口未返回可用ID，请检查 Apps Script 返回格式');
+            }
+
+            return id;
+        }
+
         function switchTab(tab) {
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.tab-button').forEach(el => el.classList.remove('active'));
@@ -185,7 +236,7 @@ https://wa.me/789?text=START"></textarea>
             });
         }
 
-        function mergeLinks() {
+        async function mergeLinks() {
             try {
                 const input = document.getElementById('mergeInput').value.trim();
                 if (!input) {
@@ -202,9 +253,8 @@ https://wa.me/789?text=START"></textarea>
                     return;
                 }
 
-                // 生成极短的ID
-                const id = Math.random().toString(36).substring(2, 8);
-                localStorage.setItem('links_' + id, JSON.stringify(links));
+                // 通过在线表格接口创建共享ID，确保不同设备都可访问。
+                const id = await createOnlineSet(links);
                 
                 // 生成完整的短链接URL
                 const baseUrl = window.location.origin + window.location.pathname.split('/').slice(0, -1).join('/') + '/';
@@ -253,14 +303,7 @@ https://wa.me/789?text=START"></textarea>
                 alert('无效的链接格式！请确保链接中有 # 符号');
                 return;
             }
-            
-            // 检查这个链接的数据是否存在
-            const stored = localStorage.getItem('links_' + hash);
-            if (!stored) {
-                alert('链接已过期或不存在！');
-                return;
-            }
-            
+
             // 打开 redirect 页面
             const baseUrl = window.location.origin + window.location.pathname.split('/').slice(0, -1).join('/') + '/';
             window.location.href = baseUrl + 'redirect.html#' + hash;

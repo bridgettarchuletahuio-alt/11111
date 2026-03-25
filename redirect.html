@@ -6,30 +6,92 @@
 </head>
 <body>
     <script>
-        (function() {
+        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby2paXv3sGLcLhwnLSee3oN7IG_Uz09hayIfPcBHVAFtGzEOogXnJam1gq-f3ThcHBT/exec';
+
+        function tryParseJson(text) {
+            try {
+                return JSON.parse(text);
+            } catch (e) {
+                return text;
+            }
+        }
+
+        function extractNextUrl(payload) {
+            if (!payload) return null;
+            if (typeof payload === 'string' && /^https?:\/\//i.test(payload.trim())) {
+                return payload.trim();
+            }
+
+            return payload.url || payload.link || payload.next || payload.nextUrl || payload.target || payload.redirect ||
+                (payload.data && (payload.data.url || payload.data.link || payload.data.next || payload.data.nextUrl || payload.data.target || payload.data.redirect)) || null;
+        }
+
+        function setPageMessage(text) {
+            document.body.innerHTML = `<p style="font-family: Arial, sans-serif; padding: 20px; color: #333;">${text}</p>`;
+        }
+
+        async function getOnlineNextUrl(id) {
+            const getUrl = `${SCRIPT_URL}?action=next&id=${encodeURIComponent(id)}`;
+            const getResp = await fetch(getUrl, { method: 'GET', redirect: 'follow' });
+            const getText = await getResp.text();
+            let nextUrl = extractNextUrl(tryParseJson(getText));
+
+            if (nextUrl) return nextUrl;
+
+            const postResp = await fetch(SCRIPT_URL, {
+                method: 'POST',
+                redirect: 'follow',
+                headers: {
+                    'Content-Type': 'text/plain;charset=utf-8'
+                },
+                body: JSON.stringify({ action: 'next', id })
+            });
+            const postText = await postResp.text();
+            nextUrl = extractNextUrl(tryParseJson(postText));
+
+            if (!nextUrl) {
+                throw new Error('在线表格接口未返回可跳转链接');
+            }
+
+            return nextUrl;
+        }
+
+        function getLocalNextUrl(id) {
+            const stored = localStorage.getItem('links_' + id);
+            if (!stored) return null;
+
+            const links = JSON.parse(stored);
+            if (!Array.isArray(links) || links.length === 0) return null;
+
+            const index = parseInt(sessionStorage.getItem(id + '_idx') || '0', 10);
+            const currentIndex = Number.isNaN(index) ? 0 : index;
+            const nextIndex = (currentIndex + 1) % links.length;
+            sessionStorage.setItem(id + '_idx', String(nextIndex));
+            return links[currentIndex];
+        }
+
+        (async function() {
             const hash = window.location.hash.substring(1);
             
-            if (!hash) return;
-            
-            const stored = localStorage.getItem('links_' + hash);
-            if (!stored) return;
-            
-            try {
-                const links = JSON.parse(stored);
-                if (!Array.isArray(links) || links.length === 0) return;
-                
-                // 获取当前索引并计算下一个索引（循环）
-                const index = parseInt(sessionStorage.getItem(hash + '_idx') || '0');
-                const nextIndex = (index + 1) % links.length;
-                
-                // 保存下一个索引
-                sessionStorage.setItem(hash + '_idx', nextIndex);
-                
-                // 直接跳转到当前链接（无任何提示或错误信息）
-                window.location.href = links[index];
-            } catch(e) {
-                // 发生错误时也不显示任何提示，直接返回
+            if (!hash) {
+                setPageMessage('缺少链接ID，无法跳转。');
                 return;
+            }
+
+            try {
+                const nextUrl = await getOnlineNextUrl(hash);
+                window.location.replace(nextUrl);
+            } catch(e) {
+                try {
+                    const localUrl = getLocalNextUrl(hash);
+                    if (localUrl) {
+                        window.location.replace(localUrl);
+                        return;
+                    }
+                } catch (ignore) {
+                }
+
+                setPageMessage('跳转失败，请确认在线表格接口已部署并可访问。');
             }
         })();
     </script>
