@@ -24,9 +24,9 @@
 
 如果你准备把现有 GitHub Pages 管理页接到 Worker：
 
-1. 把 [index.html](index.html) 里的 `SCRIPT_URL` 改成你的 Worker 地址加 `/api`
-2. 把 [index.html](index.html) 里的 `PUBLIC_BASE_URL` 改成你的 Worker 域名，比如 `https://xxx.workers.dev/`
-3. 把 [index.html](index.html) 里的 `SHORT_LINK_MODE` 从 `legacy` 改成 `worker`
+1. 打开 [index.html](index.html) 里的 `MIGRATION_CONFIG`
+2. 把 `workerBaseUrl` 改成你的 Worker 域名，比如 `https://xxx.workers.dev`
+3. 把 `useWorker` 从 `false` 改成 `true`
 
 改完后，前台生成的短链会从旧的 `redirect.html#abc123` 变成新的 `https://你的域名/r/abc123`。
 

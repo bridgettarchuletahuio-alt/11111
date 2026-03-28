@@ -245,9 +245,21 @@ https://wa.me/789?text=START"></textarea>
     </div>
 
     <script>
-        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwMYWgW6oBK1VFGhQVfdMiaE-wJU8MSGNLqvwgqvTUPsQJyZswdC_LxKTmqrv8l7IVM/exec';
-        const PUBLIC_BASE_URL = 'https://bridgettarchuletahuio-alt.github.io/11111/';
-        const SHORT_LINK_MODE = 'legacy';
+        const MIGRATION_CONFIG = {
+            useWorker: false,
+            workerBaseUrl: 'https://your-worker.your-subdomain.workers.dev',
+            legacyScriptUrl: 'https://script.google.com/macros/s/AKfycbwMYWgW6oBK1VFGhQVfdMiaE-wJU8MSGNLqvwgqvTUPsQJyZswdC_LxKTmqrv8l7IVM/exec',
+            legacyPublicBaseUrl: 'https://bridgettarchuletahuio-alt.github.io/11111/'
+        };
+
+        const normalizedWorkerBaseUrl = MIGRATION_CONFIG.workerBaseUrl.replace(/\/+$/, '');
+        const SCRIPT_URL = MIGRATION_CONFIG.useWorker
+            ? normalizedWorkerBaseUrl + '/api'
+            : MIGRATION_CONFIG.legacyScriptUrl;
+        const PUBLIC_BASE_URL = MIGRATION_CONFIG.useWorker
+            ? normalizedWorkerBaseUrl + '/'
+            : MIGRATION_CONFIG.legacyPublicBaseUrl;
+        const SHORT_LINK_MODE = MIGRATION_CONFIG.useWorker ? 'worker' : 'legacy';
 
         function getBaseUrl() {
             return PUBLIC_BASE_URL;
