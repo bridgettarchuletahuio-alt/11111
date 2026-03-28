@@ -2,6 +2,9 @@ const jsonHeaders = {
     'content-type': 'application/json; charset=utf-8'
 };
 
+const inMemoryLinksCache = new Map();
+const DEFAULT_LINKS_CACHE_TTL_MS = 5 * 60 * 1000;
+
 export default {
     async fetch(request, env, executionCtx) {
         try {
@@ -130,6 +133,9 @@ async function createSet(env, payload) {
         'INSERT INTO link_sets (id, name, links_json, current_index, click_count, created_at, updated_at) VALUES (?, ?, ?, 0, 0, ?, ?)'
     ).bind(id, name, JSON.stringify(links), now, now).run();
 
+    setLinksMemoryCache(env, id, links);
+    await setLinksKvCache(env, id, links);
+
     return id;
 }
 
@@ -140,14 +146,14 @@ async function nextUrl(env, rawId, meta, options = {}) {
     const hashIp = options.hashIp !== false;
 
     const setRow = await env.DB.prepare(
-        'SELECT id, links_json, current_index, click_count FROM link_sets WHERE id = ?'
+        'SELECT id, current_index, click_count FROM link_sets WHERE id = ?'
     ).bind(id).first();
 
     if (!setRow) {
         throw httpError(404, 'Link set not found');
     }
 
-    const links = JSON.parse(setRow.links_json || '[]');
+    const links = await getLinksForSet(env, id);
     if (!Array.isArray(links) || links.length === 0) {
         throw httpError(409, 'Link set is empty');
     }
@@ -253,6 +259,8 @@ async function getStats(env, rawId) {
     }
 
     const links = safeParseArray(setRow.links_json);
+    setLinksMemoryCache(env, id, links);
+    await setLinksKvCache(env, id, links);
     const { results } = await env.DB.prepare(
         'SELECT link_index, COUNT(*) AS clicks, MAX(clicked_at) AS last_clicked_at FROM click_logs WHERE set_id = ? GROUP BY link_index ORDER BY link_index ASC'
     ).bind(id).all();
@@ -328,6 +336,98 @@ function sanitizeLinks(links) {
     }
 
     return cleanLinks;
+}
+
+async function getLinksForSet(env, id) {
+    const memoryCached = getLinksMemoryCache(env, id);
+    if (memoryCached) {
+        return memoryCached;
+    }
+
+    const kvCached = await getLinksKvCache(env, id);
+    if (kvCached) {
+        setLinksMemoryCache(env, id, kvCached);
+        return kvCached;
+    }
+
+    const row = await env.DB.prepare('SELECT links_json FROM link_sets WHERE id = ?').bind(id).first();
+    if (!row) {
+        return null;
+    }
+
+    const links = safeParseArray(row.links_json);
+    if (links.length > 0) {
+        setLinksMemoryCache(env, id, links);
+        await setLinksKvCache(env, id, links);
+    }
+
+    return links;
+}
+
+function getLinksMemoryCache(env, id) {
+    const cached = inMemoryLinksCache.get(id);
+    if (!cached) {
+        return null;
+    }
+
+    const ttlMs = getLinksCacheTtlMs(env);
+    if (Date.now() - cached.updatedAt > ttlMs) {
+        inMemoryLinksCache.delete(id);
+        return null;
+    }
+
+    return cached.links;
+}
+
+function setLinksMemoryCache(env, id, links) {
+    if (!Array.isArray(links) || links.length === 0) {
+        return;
+    }
+
+    inMemoryLinksCache.set(id, {
+        links,
+        updatedAt: Date.now()
+    });
+}
+
+async function getLinksKvCache(env, id) {
+    if (!env.LINKS_KV || typeof env.LINKS_KV.get !== 'function') {
+        return null;
+    }
+
+    try {
+        const raw = await env.LINKS_KV.get(`links:${id}`);
+        if (!raw) {
+            return null;
+        }
+        const parsed = safeParseArray(raw);
+        return parsed.length > 0 ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+async function setLinksKvCache(env, id, links) {
+    if (!env.LINKS_KV || typeof env.LINKS_KV.put !== 'function') {
+        return;
+    }
+
+    try {
+        const ttlSeconds = Math.max(60, Math.floor(getLinksCacheTtlMs(env) / 1000));
+        await env.LINKS_KV.put(`links:${id}`, JSON.stringify(links), {
+            expirationTtl: ttlSeconds
+        });
+    } catch {
+        // KV is optional acceleration; failures should not affect core flow.
+    }
+}
+
+function getLinksCacheTtlMs(env) {
+    const configuredSeconds = Number(env.LINKS_CACHE_TTL_SECONDS || 300);
+    if (!Number.isFinite(configuredSeconds) || configuredSeconds <= 0) {
+        return DEFAULT_LINKS_CACHE_TTL_MS;
+    }
+    return configuredSeconds * 1000;
 }
 
 function normalizeIndex(value, length) {

@@ -6,6 +6,7 @@ compatibility_date = "2026-03-28"
 PUBLIC_BASE_URL = "https://bx-group.uk"
 ALLOWED_ORIGIN = "https://bridgettarchuletahuio-alt.github.io"
 ADMIN_PAGE_URL = "https://bridgettarchuletahuio-alt.github.io/11111/"
+LINKS_CACHE_TTL_SECONDS = "300"
 
 [[d1_databases]]
 binding = "DB"
