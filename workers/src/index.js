@@ -22,20 +22,121 @@ export default {
     }
 };
 
+export class LinkRouterDO {
+    constructor(state, env) {
+        this.state = state;
+        this.env = env;
+    }
+
+    async fetch(request) {
+        const url = new URL(request.url);
+        const pathname = normalizePath(url.pathname);
+
+        if (pathname === '/init' && request.method === 'POST') {
+            const payload = await readJson(request);
+            const id = sanitizeId(payload.id);
+            const links = sanitizeLinks(payload.links);
+            const currentIndex = normalizeIndex(payload.currentIndex || 0, links.length);
+
+            await this.state.storage.put('set', {
+                id,
+                links,
+                currentIndex
+            });
+
+            return new Response(JSON.stringify({ ok: true, id }), {
+                status: 200,
+                headers: jsonHeaders
+            });
+        }
+
+        if (pathname === '/next' && request.method === 'GET') {
+            const id = sanitizeId(url.searchParams.get('id') || '');
+            const data = await this.ensureSetLoaded(id);
+            const links = Array.isArray(data.links) ? data.links : [];
+            if (links.length === 0) {
+                throw httpError(409, 'Link set is empty');
+            }
+
+            const currentIndex = normalizeIndex(data.currentIndex || 0, links.length);
+            const targetUrl = String(links[currentIndex] || '');
+            if (!/^https?:\/\//i.test(targetUrl)) {
+                throw httpError(409, 'Stored URL is invalid');
+            }
+
+            const nextIndex = (currentIndex + 1) % links.length;
+            await this.state.storage.put('set', {
+                id,
+                links,
+                currentIndex: nextIndex
+            });
+
+            return new Response(JSON.stringify({
+                ok: true,
+                id,
+                index: currentIndex,
+                nextIndex,
+                url: targetUrl,
+                nextUrl: targetUrl
+            }), {
+                status: 200,
+                headers: jsonHeaders
+            });
+        }
+
+        return new Response(JSON.stringify({ error: 'Not found' }), {
+            status: 404,
+            headers: jsonHeaders
+        });
+    }
+
+    async ensureSetLoaded(id) {
+        const cached = await this.state.storage.get('set');
+        if (cached && cached.id === id && Array.isArray(cached.links) && cached.links.length > 0) {
+            return cached;
+        }
+
+        const row = await this.env.DB.prepare('SELECT links_json, current_index FROM link_sets WHERE id = ?').bind(id).first();
+        if (!row) {
+            throw httpError(404, 'Link set not found');
+        }
+
+        const links = safeParseArray(row.links_json);
+        if (links.length === 0) {
+            throw httpError(409, 'Link set is empty');
+        }
+
+        const loaded = {
+            id,
+            links,
+            currentIndex: normalizeIndex(row.current_index || 0, links.length)
+        };
+        await this.state.storage.put('set', loaded);
+        return loaded;
+    }
+}
+
 async function routeRequest(request, env, executionCtx) {
     const url = new URL(request.url);
     const pathname = normalizePath(url.pathname);
+    const adminUrl = String(env.ADMIN_PAGE_URL || '').trim();
 
     if (request.method === 'OPTIONS') {
         return handleOptions(request, env);
     }
 
     if (pathname === '/') {
-        const adminUrl = String(env.ADMIN_PAGE_URL || '').trim();
         if (adminUrl) {
             return Response.redirect(adminUrl, 302);
         }
         return json({ ok: true, service: 'link-dispatch-worker' }, 200, request, env);
+    }
+
+    // Compatibility redirects for old/bookmarked admin paths.
+    if (pathname === '/11111' || pathname === '/11111/' || pathname === '/index.html') {
+        if (adminUrl) {
+            return Response.redirect(adminUrl, 302);
+        }
     }
 
     if (pathname === '/health') {
@@ -48,7 +149,7 @@ async function routeRequest(request, env, executionCtx) {
     }
 
     if (pathname === '/api' && request.method === 'POST') {
-        return handleActionApi(request, env);
+        return handleActionApi(request, env, executionCtx);
     }
 
     if (pathname === '/api/sets' && request.method === 'GET') {
@@ -81,7 +182,7 @@ function clampLimit(value) {
     return Math.min(Math.floor(value), 100);
 }
 
-async function handleActionApi(request, env) {
+async function handleActionApi(request, env, executionCtx) {
     const payload = await readJson(request);
     const action = String(payload.action || '').trim();
 
@@ -90,6 +191,10 @@ async function handleActionApi(request, env) {
             ua: payload.ua,
             ref: payload.ref,
             ip: request.headers.get('CF-Connecting-IP') || ''
+        }, {
+            asyncLog: true,
+            executionCtx,
+            hashIp: false
         });
         return json(result, 200, request, env);
     }
@@ -135,6 +240,7 @@ async function createSet(env, payload) {
 
     setLinksMemoryCache(env, id, links);
     await setLinksKvCache(env, id, links);
+    await initDurableSet(env, id, links, 0);
 
     return id;
 }
@@ -145,26 +251,10 @@ async function nextUrl(env, rawId, meta, options = {}) {
     const executionCtx = options.executionCtx;
     const hashIp = options.hashIp !== false;
 
-    const setRow = await env.DB.prepare(
-        'SELECT id, current_index, click_count FROM link_sets WHERE id = ?'
-    ).bind(id).first();
-
-    if (!setRow) {
-        throw httpError(404, 'Link set not found');
-    }
-
-    const links = await getLinksForSet(env, id);
-    if (!Array.isArray(links) || links.length === 0) {
-        throw httpError(409, 'Link set is empty');
-    }
-
-    const currentIndex = normalizeIndex(setRow.current_index, links.length);
-    const url = String(links[currentIndex] || '');
-    if (!/^https?:\/\//i.test(url)) {
-        throw httpError(409, 'Stored URL is invalid');
-    }
-
-    const nextIndexValue = (currentIndex + 1) % links.length;
+    const fast = await nextFromDurable(env, id);
+    const currentIndex = Number(fast.index || 0);
+    const nextIndexValue = Number(fast.nextIndex || 0);
+    const url = String(fast.url || fast.nextUrl || '');
     const now = new Date().toISOString();
     const logId = crypto.randomUUID();
     const ua = typeof meta.ua === 'string' ? meta.ua.slice(0, 500) : '';
@@ -209,7 +299,7 @@ async function nextUrl(env, rawId, meta, options = {}) {
         index: currentIndex,
         url,
         nextUrl: url,
-        clicks: Number(setRow.click_count || 0) + 1
+        clicks: null
     };
 }
 
@@ -233,6 +323,47 @@ async function handleRedirect(rawId, request, env, executionCtx) {
         statusText: redirectResponse.statusText,
         headers
     });
+}
+
+async function nextFromDurable(env, id) {
+    if (!env.LINK_ROUTER_DO) {
+        throw httpError(500, 'LINK_ROUTER_DO binding is missing');
+    }
+
+    const doId = env.LINK_ROUTER_DO.idFromName(id);
+    const stub = env.LINK_ROUTER_DO.get(doId);
+    const resp = await stub.fetch(`https://do/next?id=${encodeURIComponent(id)}`);
+    const payload = await resp.json().catch(() => ({}));
+
+    if (!resp.ok) {
+        throw httpError(resp.status || 500, payload.error || 'Failed to resolve next url');
+    }
+
+    return payload;
+}
+
+async function initDurableSet(env, id, links, currentIndex) {
+    if (!env.LINK_ROUTER_DO) {
+        return;
+    }
+
+    try {
+        const doId = env.LINK_ROUTER_DO.idFromName(id);
+        const stub = env.LINK_ROUTER_DO.get(doId);
+        await stub.fetch('https://do/init', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json; charset=utf-8'
+            },
+            body: JSON.stringify({
+                id,
+                links,
+                currentIndex
+            })
+        });
+    } catch {
+        // DO warmup failures should not block createSet.
+    }
 }
 
 async function listSets(env, limit) {

@@ -12,3 +12,11 @@ LINKS_CACHE_TTL_SECONDS = "300"
 binding = "DB"
 database_name = "link-dispatch-db"
 database_id = "f46d802d-0157-4d71-9878-2f64880acc1f"
+
+[[durable_objects.bindings]]
+name = "LINK_ROUTER_DO"
+class_name = "LinkRouterDO"
+
+[[migrations]]
+tag = "link-router-do-v1"
+new_sqlite_classes = ["LinkRouterDO"]
