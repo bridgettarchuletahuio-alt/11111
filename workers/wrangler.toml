@@ -1,0 +1,12 @@
+name = "link-dispatch-worker"
+main = "src/index.js"
+compatibility_date = "2026-03-28"
+
+[vars]
+PUBLIC_BASE_URL = "https://your-worker.your-subdomain.workers.dev"
+ALLOWED_ORIGIN = "https://bridgettarchuletahuio-alt.github.io"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "link-dispatch-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"

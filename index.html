@@ -246,9 +246,18 @@ https://wa.me/789?text=START"></textarea>
 
     <script>
         const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwMYWgW6oBK1VFGhQVfdMiaE-wJU8MSGNLqvwgqvTUPsQJyZswdC_LxKTmqrv8l7IVM/exec';
+        const PUBLIC_BASE_URL = 'https://bridgettarchuletahuio-alt.github.io/11111/';
+        const SHORT_LINK_MODE = 'legacy';
 
         function getBaseUrl() {
-            return window.location.origin + window.location.pathname.split('/').slice(0, -1).join('/') + '/';
+            return PUBLIC_BASE_URL;
+        }
+
+        function buildShortUrl(id) {
+            const baseUrl = getBaseUrl();
+            return SHORT_LINK_MODE === 'worker'
+                ? baseUrl.replace(/\/+$/, '') + '/r/' + id
+                : baseUrl + 'redirect.html#' + id;
         }
 
         async function apiPost(payload) {
@@ -342,6 +351,13 @@ https://wa.me/789?text=START"></textarea>
             fetchStats(id);
         }
 
+        function prefillStatsId(id) {
+            document.getElementById('statsIdInput').value = id;
+            const output = document.getElementById('statsOutput');
+            output.className = 'empty-text';
+            output.textContent = '已填入最新ID，点击“查询统计”即可查看。';
+        }
+
         function fetchStatsByInput() {
             const id = document.getElementById('statsIdInput').value.trim();
             if (!id) {
@@ -366,13 +382,12 @@ https://wa.me/789?text=START"></textarea>
                     return;
                 }
 
-                const baseUrl = getBaseUrl();
                 output.className = '';
                 output.innerHTML = items.map(item => {
                     const id = item.id || item.hash || item.key || '';
                     const createdAt = item.createdAt || item.created_at || item.time || '-';
                     const count = item.count != null ? item.count : (Array.isArray(item.links) ? item.links.length : '-');
-                    const shortUrl = baseUrl + 'redirect.html#' + id;
+                    const shortUrl = buildShortUrl(id);
 
                     return `
                         <div class="history-item">
@@ -455,8 +470,7 @@ https://wa.me/789?text=START"></textarea>
                 const id = await createOnlineSet(links);
                 
                 // 生成完整的短链接URL
-                const baseUrl = getBaseUrl();
-                const mergedUrl = baseUrl + 'redirect.html#' + id;
+                const mergedUrl = buildShortUrl(id);
 
                 // 显示结果
                 const outputDiv = document.getElementById('mergeOutput');
@@ -470,8 +484,7 @@ https://wa.me/789?text=START"></textarea>
                     </div>
                 `;
 
-                fetchHistory();
-                setStatsId(id);
+                prefillStatsId(id);
 
             } catch (error) {
                 console.error('生成链接时出错：', error);
@@ -519,22 +532,21 @@ https://wa.me/789?text=START"></textarea>
                 alert('请粘贴链接！');
                 return;
             }
-            
-            // 从链接中提取 hash (ID)
-            const hashMatch = input.match(/#(.+?)(?:\?|$)/);
-            const hash = hashMatch ? hashMatch[1] : null;
-            
-            if (!hash) {
-                alert('无效的链接格式！请确保链接中有 # 符号');
+
+            const workerMatch = input.match(/\/r\/([a-zA-Z0-9_-]{4,64})(?:[/?#]|$)/);
+            const hashMatch = input.match(/#([a-zA-Z0-9_-]{4,64})(?:\?|$)/);
+            const rawIdMatch = input.match(/^[a-zA-Z0-9_-]{4,64}$/);
+            const id = (workerMatch && workerMatch[1]) || (hashMatch && hashMatch[1]) || (rawIdMatch && rawIdMatch[0]) || null;
+
+            if (!id) {
+                alert('无效的链接格式！请粘贴 Worker 短链、旧版 # 短链，或直接输入链接ID。');
                 return;
             }
 
-            // 打开 redirect 页面
-            const baseUrl = getBaseUrl();
-            window.location.href = baseUrl + 'redirect.html#' + hash;
+            window.location.href = buildShortUrl(id);
         }
 
-        fetchHistory();
+        document.getElementById('historyOutput').textContent = '点击“刷新历史”后加载。';
     </script>
 </body>
 </html>

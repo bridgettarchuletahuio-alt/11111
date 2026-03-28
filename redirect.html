@@ -2,9 +2,12 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>链接转发中...</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="preconnect" href="https://script.google.com" crossorigin>
+    <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
+    <title>打开中</title>
 </head>
-<body>
+<body style="margin:0;background:#fff;">
     <script>
         const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwMYWgW6oBK1VFGhQVfdMiaE-wJU8MSGNLqvwgqvTUPsQJyZswdC_LxKTmqrv8l7IVM/exec';
 
@@ -27,6 +30,7 @@
         }
 
         function setPageMessage(text) {
+            document.title = '跳转提示';
             document.body.innerHTML = `<p style="font-family: Arial, sans-serif; padding: 20px; color: #333;">${text}</p>`;
         }
 
