@@ -9,4 +9,4 @@ ALLOWED_ORIGIN = "https://bridgettarchuletahuio-alt.github.io"
 [[d1_databases]]
 binding = "DB"
 database_name = "link-dispatch-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "f46d802d-0157-4d71-9878-2f64880acc1f"
