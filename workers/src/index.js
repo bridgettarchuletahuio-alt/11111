@@ -169,19 +169,25 @@ async function nextUrl(env, rawId, meta, options = {}) {
     const logId = crypto.randomUUID();
     const ua = typeof meta.ua === 'string' ? meta.ua.slice(0, 500) : '';
     const ref = typeof meta.ref === 'string' ? meta.ref.slice(0, 1000) : '';
-    const updateStmt = env.DB.prepare(
-        'UPDATE link_sets SET current_index = ?, click_count = COALESCE(click_count, 0) + 1, updated_at = ? WHERE id = ?'
+    const updateIndexStmt = env.DB.prepare(
+        'UPDATE link_sets SET current_index = ?, updated_at = ? WHERE id = ?'
     ).bind(nextIndexValue, now, id);
+    const bumpClickCountStmt = env.DB.prepare(
+        'UPDATE link_sets SET click_count = COALESCE(click_count, 0) + 1 WHERE id = ?'
+    ).bind(id);
 
     if (asyncLog && executionCtx && typeof executionCtx.waitUntil === 'function') {
-        await updateStmt.run();
+        await updateIndexStmt.run();
 
         executionCtx.waitUntil((async () => {
             try {
                 const ipHash = hashIp ? await sha256(meta.ip || '') : '';
-                await env.DB.prepare(
+                await env.DB.batch([
+                    bumpClickCountStmt,
+                    env.DB.prepare(
                     'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-                ).bind(logId, id, currentIndex, url, now, ua, ref, ipHash).run();
+                    ).bind(logId, id, currentIndex, url, now, ua, ref, ipHash)
+                ]);
             } catch {
                 // Log write failures should never block redirect responses.
             }
@@ -189,7 +195,8 @@ async function nextUrl(env, rawId, meta, options = {}) {
     } else {
         const ipHash = hashIp ? await sha256(meta.ip || '') : '';
         await env.DB.batch([
-            updateStmt,
+            updateIndexStmt,
+            bumpClickCountStmt,
             env.DB.prepare(
                 'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
             ).bind(logId, id, currentIndex, url, now, ua, ref, ipHash)
