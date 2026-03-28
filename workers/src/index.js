@@ -187,9 +187,19 @@ async function handleRedirect(rawId, request, env) {
         ip: request.headers.get('CF-Connecting-IP') || ''
     });
 
-    const response = Response.redirect(result.url, 302);
-    response.headers.set('cache-control', 'no-store');
-    return withCors(response, request, env);
+    const redirectResponse = Response.redirect(result.url, 302);
+    const headers = new Headers(redirectResponse.headers);
+    headers.set('cache-control', 'no-store');
+
+    return withCors(
+        new Response(null, {
+            status: redirectResponse.status,
+            statusText: redirectResponse.statusText,
+            headers
+        }),
+        request,
+        env
+    );
 }
 
 async function listSets(env, limit) {
@@ -338,11 +348,17 @@ function handleOptions(request, env) {
 function withCors(response, request, env) {
     const origin = request.headers.get('origin');
     const allowedOrigin = env.ALLOWED_ORIGIN || '*';
-    response.headers.set('access-control-allow-origin', allowedOrigin === '*' ? '*' : origin || allowedOrigin);
-    response.headers.set('access-control-allow-methods', 'GET,POST,OPTIONS');
-    response.headers.set('access-control-allow-headers', 'Content-Type,Authorization,X-Admin-Token');
-    response.headers.set('vary', 'Origin');
-    return response;
+    const headers = new Headers(response.headers);
+    headers.set('access-control-allow-origin', allowedOrigin === '*' ? '*' : origin || allowedOrigin);
+    headers.set('access-control-allow-methods', 'GET,POST,OPTIONS');
+    headers.set('access-control-allow-headers', 'Content-Type,Authorization,X-Admin-Token');
+    headers.set('vary', 'Origin');
+
+    return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers
+    });
 }
 
 function httpError(status, message) {
