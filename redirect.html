@@ -6,7 +6,7 @@
 </head>
 <body>
     <script>
-        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyhyqWv_iyLWJx6SBE87Z6PdUOf49hV6Xb7RbkOVXrqllOJ4ndlBACNgmGaUXM9tUvX/exec';
+        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwMYWgW6oBK1VFGhQVfdMiaE-wJU8MSGNLqvwgqvTUPsQJyZswdC_LxKTmqrv8l7IVM/exec';
 
         function tryParseJson(text) {
             try {
@@ -30,20 +30,37 @@
             document.body.innerHTML = `<p style="font-family: Arial, sans-serif; padding: 20px; color: #333;">${text}</p>`;
         }
 
-        async function getOnlineNextUrl(id) {
+        async function apiPost(payload) {
             const postResp = await fetch(SCRIPT_URL, {
                 method: 'POST',
                 redirect: 'follow',
                 headers: {
                     'Content-Type': 'text/plain;charset=utf-8'
                 },
-                body: JSON.stringify({ id })
+                body: JSON.stringify(payload)
             });
             const postText = await postResp.text();
             const parsed = tryParseJson(postText);
 
             if (parsed && typeof parsed === 'object' && parsed.error) {
                 throw new Error(parsed.error);
+            }
+
+            return parsed;
+        }
+
+        async function getOnlineNextUrl(id) {
+            let parsed;
+            try {
+                parsed = await apiPost({
+                    action: 'nextUrl',
+                    id,
+                    ua: navigator.userAgent,
+                    ref: document.referrer || ''
+                });
+            } catch (error) {
+                // 兼容旧版接口：不带action仅传id。
+                parsed = await apiPost({ id });
             }
 
             const nextUrl = extractNextUrl(parsed);

@@ -132,6 +132,63 @@
             font-size: 14px;
             color: #0056b3;
         }
+        .panel {
+            margin-top: 20px;
+            border: 1px solid #e6e6e6;
+            border-radius: 6px;
+            padding: 14px;
+            background: #fafafa;
+        }
+        .panel h3 {
+            margin-bottom: 10px;
+            color: #333;
+            font-size: 17px;
+        }
+        .mini-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .mini-row input {
+            flex: 1;
+            min-width: 180px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            font-family: monospace;
+        }
+        .mini-btn {
+            margin-top: 0;
+            padding: 10px 12px;
+            font-size: 14px;
+            white-space: nowrap;
+        }
+        .history-item,
+        .stat-item {
+            background: white;
+            border: 1px solid #ececec;
+            border-radius: 5px;
+            padding: 10px;
+            margin-top: 8px;
+        }
+        .history-meta {
+            color: #666;
+            font-size: 12px;
+            margin-top: 4px;
+        }
+        .url-preview {
+            margin-top: 6px;
+            word-break: break-all;
+            color: #0066cc;
+            font-size: 13px;
+        }
+        .empty-text {
+            color: #777;
+            font-size: 14px;
+            padding: 8px 0;
+        }
     </style>
 </head>
 <body>
@@ -155,6 +212,23 @@ https://wa.me/456?text=START
 https://wa.me/789?text=START"></textarea>
             <button onclick="mergeLinks()">生成合并链接</button>
             <div id="mergeOutput"></div>
+
+            <div class="panel">
+                <div class="mini-row" style="justify-content: space-between; align-items: center;">
+                    <h3>历史记录</h3>
+                    <button class="mini-btn" onclick="fetchHistory()">刷新历史</button>
+                </div>
+                <div id="historyOutput" class="empty-text">正在加载历史记录...</div>
+            </div>
+
+            <div class="panel">
+                <h3>点击统计</h3>
+                <div class="mini-row" style="margin-bottom: 10px;">
+                    <input id="statsIdInput" type="text" placeholder="输入合并链接ID，例如：abc123">
+                    <button class="mini-btn" onclick="fetchStatsByInput()">查询统计</button>
+                </div>
+                <div id="statsOutput" class="empty-text">输入ID后可查看每个链接点击次数。</div>
+            </div>
         </div>
 
         <!-- 分配链接模式 -->
@@ -171,7 +245,31 @@ https://wa.me/789?text=START"></textarea>
     </div>
 
     <script>
-        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyhyqWv_iyLWJx6SBE87Z6PdUOf49hV6Xb7RbkOVXrqllOJ4ndlBACNgmGaUXM9tUvX/exec';
+        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwMYWgW6oBK1VFGhQVfdMiaE-wJU8MSGNLqvwgqvTUPsQJyZswdC_LxKTmqrv8l7IVM/exec';
+
+        function getBaseUrl() {
+            return window.location.origin + window.location.pathname.split('/').slice(0, -1).join('/') + '/';
+        }
+
+        async function apiPost(payload) {
+            const postResp = await fetch(SCRIPT_URL, {
+                method: 'POST',
+                redirect: 'follow',
+                headers: {
+                    'Content-Type': 'text/plain;charset=utf-8'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            const postText = await postResp.text();
+            const parsed = tryParseJson(postText);
+
+            if (parsed && typeof parsed === 'object' && parsed.error) {
+                throw new Error(parsed.error);
+            }
+
+            return parsed;
+        }
 
         function tryParseJson(text) {
             try {
@@ -198,26 +296,128 @@ https://wa.me/789?text=START"></textarea>
 
         async function createOnlineSet(links) {
             const id = makeShortId();
-            const payload = { id, links };
-
-            const postResp = await fetch(SCRIPT_URL, {
-                method: 'POST',
-                redirect: 'follow',
-                headers: {
-                    'Content-Type': 'text/plain;charset=utf-8'
-                },
-                body: JSON.stringify(payload)
-            });
-
-            const postText = await postResp.text();
-            const parsed = tryParseJson(postText);
-
-            if (parsed && typeof parsed === 'object' && parsed.error) {
-                throw new Error(parsed.error);
+            try {
+                await apiPost({ action: 'createSet', id, links });
+            } catch (error) {
+                // 兼容旧版接口：不带action时仍可写入。
+                await apiPost({ id, links });
             }
 
             // 接口写入成功即可，ID 由前端预先生成并作为共享键。
             return id;
+        }
+
+        function extractHistoryItems(payload) {
+            if (!payload || typeof payload !== 'object') return [];
+
+            const direct = payload.items || payload.history || [];
+            const nested = payload.data && (payload.data.items || payload.data.history) || [];
+            const list = Array.isArray(direct) ? direct : (Array.isArray(nested) ? nested : []);
+
+            return list.filter(item => item && typeof item === 'object');
+        }
+
+        function extractStats(payload) {
+            if (!payload || typeof payload !== 'object') return [];
+
+            const direct = payload.stats || payload.items || [];
+            const nested = payload.data && (payload.data.stats || payload.data.items) || [];
+            const list = Array.isArray(direct) ? direct : (Array.isArray(nested) ? nested : []);
+
+            return list.map((item, idx) => {
+                if (typeof item === 'string') {
+                    return { index: idx, url: item, clicks: 0 };
+                }
+                return {
+                    index: item.index != null ? item.index : idx,
+                    url: item.url || item.link || item.target || '',
+                    clicks: Number(item.clicks || item.count || 0)
+                };
+            });
+        }
+
+        function setStatsId(id) {
+            const input = document.getElementById('statsIdInput');
+            input.value = id;
+            fetchStats(id);
+        }
+
+        function fetchStatsByInput() {
+            const id = document.getElementById('statsIdInput').value.trim();
+            if (!id) {
+                alert('请先输入链接ID！');
+                return;
+            }
+            fetchStats(id);
+        }
+
+        async function fetchHistory() {
+            const output = document.getElementById('historyOutput');
+            output.className = 'empty-text';
+            output.textContent = '历史加载中...';
+
+            try {
+                const payload = await apiPost({ action: 'listSets', limit: 20 });
+                const items = extractHistoryItems(payload);
+
+                if (items.length === 0) {
+                    output.className = 'empty-text';
+                    output.textContent = '暂无历史记录（请先在接口中实现 action=listSets）。';
+                    return;
+                }
+
+                const baseUrl = getBaseUrl();
+                output.className = '';
+                output.innerHTML = items.map(item => {
+                    const id = item.id || item.hash || item.key || '';
+                    const createdAt = item.createdAt || item.created_at || item.time || '-';
+                    const count = item.count != null ? item.count : (Array.isArray(item.links) ? item.links.length : '-');
+                    const shortUrl = baseUrl + 'redirect.html#' + id;
+
+                    return `
+                        <div class="history-item">
+                            <div><strong>ID:</strong> ${id || '(未知)'}</div>
+                            <div class="history-meta">创建时间: ${createdAt} | 链接数: ${count}</div>
+                            <div class="url-preview">${shortUrl}</div>
+                            <div class="mini-row" style="margin-top: 8px;">
+                                <button class="mini-btn copy-btn" onclick="copyText('${shortUrl.replace(/'/g, "&#39;")}', this)">复制短链</button>
+                                <button class="mini-btn" onclick="setStatsId('${String(id).replace(/'/g, "&#39;")}')">查看统计</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (error) {
+                output.className = 'empty-text';
+                output.textContent = '历史加载失败：' + error.message;
+            }
+        }
+
+        async function fetchStats(id) {
+            const output = document.getElementById('statsOutput');
+            output.className = 'empty-text';
+            output.textContent = '统计加载中...';
+
+            try {
+                const payload = await apiPost({ action: 'getStats', id });
+                const rows = extractStats(payload);
+
+                if (rows.length === 0) {
+                    output.className = 'empty-text';
+                    output.textContent = '暂无统计数据（请确认接口已实现 action=getStats）。';
+                    return;
+                }
+
+                output.className = '';
+                output.innerHTML = rows.map(row => `
+                    <div class="stat-item">
+                        <div><strong>#${row.index}</strong> 点击次数: <strong>${row.clicks}</strong></div>
+                        <div class="url-preview">${row.url || '(无URL)'}</div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                output.className = 'empty-text';
+                output.textContent = '统计查询失败：' + error.message;
+            }
         }
 
         function switchTab(tab) {
@@ -255,7 +455,7 @@ https://wa.me/789?text=START"></textarea>
                 const id = await createOnlineSet(links);
                 
                 // 生成完整的短链接URL
-                const baseUrl = window.location.origin + window.location.pathname.split('/').slice(0, -1).join('/') + '/';
+                const baseUrl = getBaseUrl();
                 const mergedUrl = baseUrl + 'redirect.html#' + id;
 
                 // 显示结果
@@ -265,9 +465,13 @@ https://wa.me/789?text=START"></textarea>
                         <label>✅ 成功生成短链接！(${links.length} 个)</label>
                         <input type="text" value="${mergedUrl}" readonly style="margin-top: 10px; font-size: 14px;">
                         <button class="copy-btn" onclick="copyToClipboard(this)">📋 复制链接</button>
+                        <button onclick="setStatsId('${id}')">📊 查看该链接统计</button>
                         <div class="success-msg">✨ 极短链接已生成，用户每次访问直接跳转到下一个网址</div>
                     </div>
                 `;
+
+                fetchHistory();
+                setStatsId(id);
 
             } catch (error) {
                 console.error('生成链接时出错：', error);
@@ -275,15 +479,38 @@ https://wa.me/789?text=START"></textarea>
             }
         }
 
+        function copyText(text, button) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(() => {
+                    if (!button) return;
+                    const oldText = button.textContent;
+                    button.textContent = '✅ 已复制！';
+                    setTimeout(() => {
+                        button.textContent = oldText;
+                    }, 2000);
+                });
+                return;
+            }
+
+            const temp = document.createElement('textarea');
+            temp.value = text;
+            document.body.appendChild(temp);
+            temp.select();
+            document.execCommand('copy');
+            document.body.removeChild(temp);
+
+            if (button) {
+                const oldText = button.textContent;
+                button.textContent = '✅ 已复制！';
+                setTimeout(() => {
+                    button.textContent = oldText;
+                }, 2000);
+            }
+        }
+
         function copyToClipboard(button) {
             const input = button.previousElementSibling;
-            input.select();
-            document.execCommand('copy');
-            const oldText = button.textContent;
-            button.textContent = '✅ 已复制！';
-            setTimeout(() => {
-                button.textContent = oldText;
-            }, 2000);
+            copyText(input.value, button);
         }
 
         function openDistributedLink() {
@@ -303,9 +530,11 @@ https://wa.me/789?text=START"></textarea>
             }
 
             // 打开 redirect 页面
-            const baseUrl = window.location.origin + window.location.pathname.split('/').slice(0, -1).join('/') + '/';
+            const baseUrl = getBaseUrl();
             window.location.href = baseUrl + 'redirect.html#' + hash;
         }
+
+        fetchHistory();
     </script>
 </body>
 </html>
