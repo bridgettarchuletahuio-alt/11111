@@ -3,9 +3,9 @@ const jsonHeaders = {
 };
 
 export default {
-    async fetch(request, env) {
+    async fetch(request, env, executionCtx) {
         try {
-            return await routeRequest(request, env);
+            return await routeRequest(request, env, executionCtx);
         } catch (error) {
             return withCors(
                 new Response(JSON.stringify({ error: error.message || 'Internal error' }), {
@@ -19,7 +19,7 @@ export default {
     }
 };
 
-async function routeRequest(request, env) {
+async function routeRequest(request, env, executionCtx) {
     const url = new URL(request.url);
     const pathname = normalizePath(url.pathname);
 
@@ -41,7 +41,7 @@ async function routeRequest(request, env) {
 
     if (pathname.startsWith('/r/')) {
         const id = pathname.slice(3);
-        return handleRedirect(id, request, env);
+        return handleRedirect(id, request, env, executionCtx);
     }
 
     if (pathname === '/api' && request.method === 'POST') {
@@ -133,8 +133,12 @@ async function createSet(env, payload) {
     return id;
 }
 
-async function nextUrl(env, rawId, meta) {
+async function nextUrl(env, rawId, meta, options = {}) {
     const id = sanitizeId(rawId);
+    const asyncLog = options.asyncLog === true;
+    const executionCtx = options.executionCtx;
+    const hashIp = options.hashIp !== false;
+
     const setRow = await env.DB.prepare(
         'SELECT id, links_json, current_index, click_count FROM link_sets WHERE id = ?'
     ).bind(id).first();
@@ -159,16 +163,32 @@ async function nextUrl(env, rawId, meta) {
     const logId = crypto.randomUUID();
     const ua = typeof meta.ua === 'string' ? meta.ua.slice(0, 500) : '';
     const ref = typeof meta.ref === 'string' ? meta.ref.slice(0, 1000) : '';
-    const ipHash = await sha256(meta.ip || '');
+    const updateStmt = env.DB.prepare(
+        'UPDATE link_sets SET current_index = ?, click_count = COALESCE(click_count, 0) + 1, updated_at = ? WHERE id = ?'
+    ).bind(nextIndexValue, now, id);
 
-    await env.DB.batch([
-        env.DB.prepare(
-            'UPDATE link_sets SET current_index = ?, click_count = COALESCE(click_count, 0) + 1, updated_at = ? WHERE id = ?'
-        ).bind(nextIndexValue, now, id),
-        env.DB.prepare(
-            'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-        ).bind(logId, id, currentIndex, url, now, ua, ref, ipHash)
-    ]);
+    if (asyncLog && executionCtx && typeof executionCtx.waitUntil === 'function') {
+        await updateStmt.run();
+
+        executionCtx.waitUntil((async () => {
+            try {
+                const ipHash = hashIp ? await sha256(meta.ip || '') : '';
+                await env.DB.prepare(
+                    'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                ).bind(logId, id, currentIndex, url, now, ua, ref, ipHash).run();
+            } catch {
+                // Log write failures should never block redirect responses.
+            }
+        })());
+    } else {
+        const ipHash = hashIp ? await sha256(meta.ip || '') : '';
+        await env.DB.batch([
+            updateStmt,
+            env.DB.prepare(
+                'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+            ).bind(logId, id, currentIndex, url, now, ua, ref, ipHash)
+        ]);
+    }
 
     return {
         ok: true,
@@ -180,26 +200,26 @@ async function nextUrl(env, rawId, meta) {
     };
 }
 
-async function handleRedirect(rawId, request, env) {
+async function handleRedirect(rawId, request, env, executionCtx) {
     const result = await nextUrl(env, rawId, {
         ua: request.headers.get('user-agent') || '',
         ref: request.headers.get('referer') || '',
         ip: request.headers.get('CF-Connecting-IP') || ''
+    }, {
+        asyncLog: true,
+        executionCtx,
+        hashIp: false
     });
 
     const redirectResponse = Response.redirect(result.url, 302);
     const headers = new Headers(redirectResponse.headers);
     headers.set('cache-control', 'no-store');
 
-    return withCors(
-        new Response(null, {
-            status: redirectResponse.status,
-            statusText: redirectResponse.statusText,
-            headers
-        }),
-        request,
-        env
-    );
+    return new Response(null, {
+        status: redirectResponse.status,
+        statusText: redirectResponse.statusText,
+        headers
+    });
 }
 
 async function listSets(env, limit) {
