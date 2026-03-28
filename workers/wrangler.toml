@@ -3,7 +3,7 @@ main = "src/index.js"
 compatibility_date = "2026-03-28"
 
 [vars]
-PUBLIC_BASE_URL = "https://your-worker.your-subdomain.workers.dev"
+PUBLIC_BASE_URL = "https://bx-group.uk"
 ALLOWED_ORIGIN = "https://bridgettarchuletahuio-alt.github.io"
 
 [[d1_databases]]
