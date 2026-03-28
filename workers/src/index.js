@@ -27,6 +27,14 @@ async function routeRequest(request, env) {
         return handleOptions(request, env);
     }
 
+    if (pathname === '/') {
+        const adminUrl = String(env.ADMIN_PAGE_URL || '').trim();
+        if (adminUrl) {
+            return Response.redirect(adminUrl, 302);
+        }
+        return json({ ok: true, service: 'link-dispatch-worker' }, 200, request, env);
+    }
+
     if (pathname === '/health') {
         return json({ ok: true, service: 'link-dispatch-worker' }, 200, request, env);
     }
