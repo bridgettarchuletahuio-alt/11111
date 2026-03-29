@@ -4,6 +4,19 @@ const jsonHeaders = {
 
 const inMemoryLinksCache = new Map();
 const DEFAULT_LINKS_CACHE_TTL_MS = 5 * 60 * 1000;
+const SUPER_ADMIN_HASH = '467bc294e964ad35a38fa11fd10e0c5c743fc5dfba6b681c3e443167c5379ce0';
+const PASSWORD_ACCOUNTS = [
+    { code: 'a1', label: '账号 1', hash: '428cacf00833cc176bf2abad9615a6dc14caf8af7e2801668fd980659eca5430' },
+    { code: 'b2', label: '账号 2', hash: 'fa6e24c632239de814613bcd81f0d4d90adb4d040798162d29231346d15bbe17' },
+    { code: 'c3', label: '账号 3', hash: '2f79509269d8d30f7fae8bc32e4ccd2bf5ef8d6346e1b1a14fe68aaf29510d6f' },
+    { code: 'd4', label: '账号 4', hash: '71b4da4702ba44019fc45ed939550d4bd3c328a031250d45bbf4000f4a281297' },
+    { code: 'e5', label: '账号 5', hash: '4b290a64059ad5556565d6bdb6c653b10cf18db6d85f6c62b54995e9767ab758' },
+    { code: 'f6', label: '账号 6', hash: 'fbf2d683e08e94699d384d6ddd8a3880f4c008d552da5f2907dc2ef6c870ccf3' },
+    { code: 'g7', label: '账号 7', hash: '622b90c4d36956503eaf361cebca594eb6ce3b7fce3e0e2b33fe81f25fb7605e' },
+    { code: 'h8', label: '账号 8', hash: '5d707bf6891f28422af407617cc133513a5246ef7df5e62cfafd3a6efc5010ca' },
+    { code: 'j9', label: '账号 9', hash: '15d8e639ff5bf0c09632619817d4102cb125b7f96d1fd5ea578cde820a3ad731' },
+    { code: 'k0', label: '账号 10', hash: '1bad790cf4a1def428529aebfd96cafbf758f90d6847ce0753d375fe7156e4bc' }
+];
 
 export default {
     async fetch(request, env, executionCtx) {
@@ -153,19 +166,19 @@ async function routeRequest(request, env, executionCtx) {
     }
 
     if (pathname === '/api/sets' && request.method === 'GET') {
-        ensureAdmin(request, env, url);
+        const access = await ensureAuthorizedAccess(request, env, url);
         const limit = clampLimit(Number(url.searchParams.get('limit') || '20'));
-        const items = await listSets(env, limit);
+        const items = await listSets(env, limit, access);
         return json({ items }, 200, request, env);
     }
 
     if (pathname.startsWith('/api/stats/') && request.method === 'GET') {
-        ensureAdmin(request, env, url);
+        const access = await ensureAuthorizedAccess(request, env, url);
         const id = pathname.slice('/api/stats/'.length).trim();
         if (!id) {
             throw httpError(400, 'Missing set id');
         }
-        const stats = await getStats(env, id);
+        const stats = await getStats(env, id, access);
         return json({ id, stats }, 200, request, env);
     }
 
@@ -186,6 +199,22 @@ async function handleActionApi(request, env, executionCtx) {
     const payload = await readJson(request);
     const action = String(payload.action || '').trim();
 
+    if (action === 'login') {
+        const access = await resolvePasswordAccess(payload.password);
+        if (!access) {
+            throw httpError(401, '密码错误');
+        }
+
+        const profile = access.mode === 'admin'
+            ? { code: 'admin', label: '超级管理员', role: 'admin' }
+            : { code: access.owner.code, label: access.owner.label, role: 'owner' };
+
+        return json({
+            ok: true,
+            owner: profile
+        }, 200, request, env);
+    }
+
     if (action === 'nextUrl') {
         const result = await nextUrl(env, payload.id, {
             ua: payload.ua,
@@ -199,10 +228,10 @@ async function handleActionApi(request, env, executionCtx) {
         return json(result, 200, request, env);
     }
 
-    ensureAdmin(request, env, new URL(request.url), payload);
+    const access = await ensureAuthorizedAccess(request, env, new URL(request.url), payload);
 
     if (action === 'createSet') {
-        const id = await createSet(env, payload);
+        const id = await createSet(env, payload, access);
         return json({
             ok: true,
             id,
@@ -211,27 +240,31 @@ async function handleActionApi(request, env, executionCtx) {
     }
 
     if (action === 'listSets') {
-        const items = await listSets(env, clampLimit(Number(payload.limit || 20)));
+        const items = await listSets(env, clampLimit(Number(payload.limit || 20)), access);
         return json({ items }, 200, request, env);
     }
 
     if (action === 'getStats') {
-        const stats = await getStats(env, payload.id);
+        const stats = await getStats(env, payload.id, access);
         return json({ id: payload.id, stats }, 200, request, env);
     }
 
     throw httpError(400, 'Unsupported action');
 }
 
-async function createSet(env, payload) {
-    const id = sanitizeId(payload.id || crypto.randomUUID().slice(0, 8));
+async function createSet(env, payload, access) {
     const links = sanitizeLinks(payload.links);
     const name = typeof payload.name === 'string' ? payload.name.trim().slice(0, 120) : '';
     const now = new Date().toISOString();
+    const id = access.mode === 'owner'
+        ? await createScopedSetId(env, access.owner.code)
+        : sanitizeId(payload.id || crypto.randomUUID().slice(0, 8));
 
-    const exists = await env.DB.prepare('SELECT id FROM link_sets WHERE id = ?').bind(id).first();
-    if (exists) {
-        throw httpError(409, 'ID already exists, please retry');
+    if (access.mode !== 'owner') {
+        const exists = await env.DB.prepare('SELECT id FROM link_sets WHERE id = ?').bind(id).first();
+        if (exists) {
+            throw httpError(409, 'ID already exists, please retry');
+        }
     }
 
     await env.DB.prepare(
@@ -366,16 +399,24 @@ async function initDurableSet(env, id, links, currentIndex) {
     }
 }
 
-async function listSets(env, limit) {
-    const { results } = await env.DB.prepare(
-        'SELECT id, name, links_json, current_index, click_count, created_at, updated_at FROM link_sets ORDER BY datetime(created_at) DESC LIMIT ?'
-    ).bind(limit).all();
+async function listSets(env, limit, access) {
+    const { results } = access.mode === 'owner'
+        ? await env.DB.prepare(
+            'SELECT id, name, links_json, current_index, click_count, created_at, updated_at FROM link_sets WHERE id LIKE ? ORDER BY datetime(created_at) DESC LIMIT ?'
+        ).bind(`${access.owner.code}%`, limit).all()
+        : await env.DB.prepare(
+            'SELECT id, name, links_json, current_index, click_count, created_at, updated_at FROM link_sets ORDER BY datetime(created_at) DESC LIMIT ?'
+        ).bind(limit).all();
 
     return (results || []).map((row) => {
         const links = safeParseArray(row.links_json);
+        const ownerCode = extractOwnerCodeFromId(row.id);
+        const owner = findOwnerByCode(ownerCode);
         return {
             id: row.id,
             name: row.name || '',
+            ownerCode,
+            ownerLabel: owner ? owner.label : '历史数据',
             createdAt: row.created_at,
             updatedAt: row.updated_at,
             currentIndex: Number(row.current_index || 0),
@@ -386,8 +427,9 @@ async function listSets(env, limit) {
     });
 }
 
-async function getStats(env, rawId) {
+async function getStats(env, rawId, access) {
     const id = sanitizeId(rawId);
+    ensureSetAccess(id, access);
     const setRow = await env.DB.prepare(
         'SELECT links_json FROM link_sets WHERE id = ?'
     ).bind(id).first();
@@ -419,21 +461,102 @@ async function getStats(env, rawId) {
     });
 }
 
+function extractAdminToken(request, url, payload) {
+    const headerToken = request.headers.get('x-admin-token') || request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || '';
+    const queryToken = url.searchParams.get('token') || '';
+    const bodyToken = payload && typeof payload.token === 'string' ? payload.token : '';
+    return headerToken || queryToken || bodyToken;
+}
+
 function ensureAdmin(request, env, url, payload) {
     const token = env.ADMIN_TOKEN;
     if (!token) {
         return;
     }
 
-    const headerToken = request.headers.get('x-admin-token') || request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || '';
-    const queryToken = url.searchParams.get('token') || '';
-    const bodyToken = payload && typeof payload.token === 'string' ? payload.token : '';
+    const providedToken = extractAdminToken(request, url, payload);
 
-    if (headerToken === token || queryToken === token || bodyToken === token) {
+    if (providedToken === token) {
         return;
     }
 
     throw httpError(401, 'Unauthorized');
+}
+
+async function ensureAuthorizedAccess(request, env, url, payload) {
+    const token = String(env.ADMIN_TOKEN || '').trim();
+    const providedToken = extractAdminToken(request, url, payload);
+    if (token && providedToken === token) {
+        return { mode: 'admin' };
+    }
+
+    const password = extractUserPassword(request, url, payload);
+    const access = await resolvePasswordAccess(password);
+    if (!access) {
+        throw httpError(401, 'Unauthorized');
+    }
+
+    return access;
+}
+
+function extractUserPassword(request, url, payload) {
+    const headerPassword = request.headers.get('x-user-password') || '';
+    const queryPassword = url.searchParams.get('password') || '';
+    const bodyPassword = payload && typeof payload.password === 'string' ? payload.password : '';
+    return headerPassword || queryPassword || bodyPassword;
+}
+
+async function resolvePasswordAccess(password) {
+    const normalized = String(password || '').trim();
+    if (!normalized) {
+        return null;
+    }
+
+    const passwordHash = await sha256(normalized);
+    if (passwordHash === SUPER_ADMIN_HASH) {
+        return { mode: 'admin' };
+    }
+
+    const owner = PASSWORD_ACCOUNTS.find((item) => item.hash === passwordHash) || null;
+    if (!owner) {
+        return null;
+    }
+
+    return {
+        mode: 'owner',
+        owner
+    };
+}
+
+async function createScopedSetId(env, ownerCode) {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+        const id = `${ownerCode}${crypto.randomUUID().replace(/-/g, '').slice(0, 6)}`;
+        const exists = await env.DB.prepare('SELECT id FROM link_sets WHERE id = ?').bind(id).first();
+        if (!exists) {
+            return id;
+        }
+    }
+
+    throw httpError(409, 'Failed to allocate a unique id');
+}
+
+function ensureSetAccess(id, access) {
+    if (access.mode !== 'owner') {
+        return;
+    }
+
+    if (!id.startsWith(access.owner.code)) {
+        throw httpError(404, 'Link set not found');
+    }
+}
+
+function extractOwnerCodeFromId(id) {
+    const normalized = String(id || '').trim();
+    return normalized.slice(0, 2);
+}
+
+function findOwnerByCode(code) {
+    return PASSWORD_ACCOUNTS.find((item) => item.code === code) || null;
 }
 
 async function readJson(request) {
@@ -609,7 +732,7 @@ function withCors(response, request, env) {
     const headers = new Headers(response.headers);
     headers.set('access-control-allow-origin', allowedOrigin === '*' ? '*' : origin || allowedOrigin);
     headers.set('access-control-allow-methods', 'GET,POST,OPTIONS');
-    headers.set('access-control-allow-headers', 'Content-Type,Authorization,X-Admin-Token');
+    headers.set('access-control-allow-headers', 'Content-Type,Authorization,X-Admin-Token,X-User-Password');
     headers.set('vary', 'Origin');
 
     return new Response(response.body, {
