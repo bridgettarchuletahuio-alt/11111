@@ -364,10 +364,18 @@ async function updateSet(env, payload, access) {
     }
 
     const keepIndex = Math.min(Number(row.current_index || 0), links.length - 1);
+    const hasName = typeof payload.name === 'string';
+    const newName = hasName ? payload.name.trim().slice(0, 120) : null;
 
-    await env.DB.prepare(
-        'UPDATE link_sets SET links_json = ?, current_index = ?, updated_at = ? WHERE id = ?'
-    ).bind(JSON.stringify(links), keepIndex, now, id).run();
+    if (hasName) {
+        await env.DB.prepare(
+            'UPDATE link_sets SET links_json = ?, current_index = ?, name = ?, updated_at = ? WHERE id = ?'
+        ).bind(JSON.stringify(links), keepIndex, newName, now, id).run();
+    } else {
+        await env.DB.prepare(
+            'UPDATE link_sets SET links_json = ?, current_index = ?, updated_at = ? WHERE id = ?'
+        ).bind(JSON.stringify(links), keepIndex, now, id).run();
+    }
 
     setLinksMemoryCache(env, id, links);
     await setLinksKvCache(env, id, links);

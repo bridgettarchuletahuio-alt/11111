@@ -361,6 +361,7 @@
 https://wa.me/123?text=START
 https://wa.me/456?text=START
 https://wa.me/789?text=START"></textarea>
+            <input type="text" id="mergeNameInput" placeholder="（可选）给这个合并链接取个名字" maxlength="120" style="width:100%; padding:10px; margin-top:10px; border:1px solid #ddd; border-radius:4px; font-size:14px;">
             <button onclick="mergeLinks()">生成合并链接</button>
             <div id="mergeOutput"></div>
 
@@ -374,6 +375,9 @@ https://wa.me/789?text=START"></textarea>
                     <div class="mini-row" style="justify-content: space-between; align-items: center;">
                         <strong id="sublinkEditorTitle">子链接管理</strong>
                         <button class="mini-btn secondary-btn" onclick="closeSublinkEditor()">关闭</button>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <input type="text" id="sublinkEditorName" placeholder="链接组名称（可选）" maxlength="120" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:4px; font-size:14px;">
                     </div>
                     <div class="muted-note">历史合并链接不会被修改或删除。你在这里编辑的是副本，点击“保存修改”只会保存当前页面草稿，不会自动生成新合并链接。</div>
                     <div class="mini-row" style="margin-top: 10px;">
@@ -420,6 +424,7 @@ https://wa.me/789?text=START"></textarea>
         const historySetMap = new Map();
         let activeHistorySetId = '';
         let editableSublinks = [];
+        let activeHistorySetName = '';
 
         const normalizedWorkerBaseUrl = MIGRATION_CONFIG.workerBaseUrl.replace(/\/+$/, '');
         const SCRIPT_URL = MIGRATION_CONFIG.useWorker
@@ -511,8 +516,8 @@ https://wa.me/789?text=START"></textarea>
                 (payload.data && (payload.data.id || payload.data.hash || payload.data.key)) || null;
         }
 
-        async function createOnlineSet(links) {
-            const payload = await apiPost({ action: 'createSet', links });
+        async function createOnlineSet(links, name) {
+            const payload = await apiPost({ action: 'createSet', links, ...(name ? { name } : {}) });
             const id = extractIdFromResponse(payload);
             if (!id) {
                 throw new Error('接口未返回有效ID');
@@ -671,9 +676,11 @@ https://wa.me/789?text=START"></textarea>
                     const ownerLabel = item.ownerLabel || item.owner_label || '';
                     const shortUrl = buildShortUrl(id);
                     const ownerText = ownerLabel ? ' | 归属: ' + ownerLabel : '';
+                    const itemName = String(item.name || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
                     return `
                         <div class="history-item">
+                            ${itemName ? `<div style="font-weight:600; font-size:15px; color:#222; margin-bottom:4px;">${itemName}</div>` : ''}
                             <div><strong>ID:</strong> ${id || '(未知)'}</div>
                             <div class="history-meta">创建时间: ${createdAt} | 链接数: ${count}${ownerText}</div>
                             <div class="url-preview">${shortUrl}</div>
@@ -697,6 +704,8 @@ https://wa.me/789?text=START"></textarea>
         function closeSublinkEditor() {
             activeHistorySetId = '';
             editableSublinks = [];
+            activeHistorySetName = '';
+            document.getElementById('sublinkEditorName').value = '';
             document.getElementById('sublinkEditor').hidden = true;
             document.getElementById('sublinkList').className = 'empty-text';
             document.getElementById('sublinkList').textContent = '请选择一个历史任务。';
@@ -720,10 +729,12 @@ https://wa.me/789?text=START"></textarea>
 
             activeHistorySetId = id;
             editableSublinks = links;
+            activeHistorySetName = item.name || '';
 
             const editor = document.getElementById('sublinkEditor');
             editor.hidden = false;
             document.getElementById('sublinkEditorTitle').textContent = '子链接管理（来源ID: ' + id + '）';
+            document.getElementById('sublinkEditorName').value = activeHistorySetName;
             renderSublinkList();
         }
 
@@ -819,12 +830,14 @@ https://wa.me/789?text=START"></textarea>
             }
 
             try {
-                await apiPost({ action: 'updateSet', id: activeHistorySetId, links: editableSublinks.slice() });
+                const editedName = document.getElementById('sublinkEditorName').value.trim();
+                await apiPost({ action: 'updateSet', id: activeHistorySetId, links: editableSublinks.slice(), name: editedName });
 
                 const targetItem = historySetMap.get(activeHistorySetId);
                 if (targetItem) {
                     targetItem.links = editableSublinks.slice();
                     targetItem.count = editableSublinks.length;
+                    targetItem.name = editedName;
                 }
 
                 renderSublinkList();
@@ -913,7 +926,8 @@ https://wa.me/789?text=START"></textarea>
                 }
 
                 // 通过在线表格接口创建共享ID，确保不同设备都可访问。
-                const id = await createOnlineSet(links);
+                const linkName = document.getElementById('mergeNameInput').value.trim();
+                const id = await createOnlineSet(links, linkName || undefined);
                 
                 // 生成完整的短链接URL
                 const mergedUrl = buildShortUrl(id);
