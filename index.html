@@ -375,10 +375,10 @@ https://wa.me/789?text=START"></textarea>
                         <strong id="sublinkEditorTitle">子链接管理</strong>
                         <button class="mini-btn secondary-btn" onclick="closeSublinkEditor()">关闭</button>
                     </div>
-                    <div class="muted-note">历史合并链接不会被修改或删除。你在这里编辑的是副本，保存后会生成一个新的合并链接。</div>
+                    <div class="muted-note">历史合并链接不会被修改或删除。你在这里编辑的是副本，点击“保存修改”只会保存当前页面草稿，不会自动生成新合并链接。</div>
                     <div class="mini-row" style="margin-top: 10px;">
                         <button class="mini-btn" onclick="addSublink()">新增子链接</button>
-                        <button class="mini-btn" onclick="saveSublinkDraft()">生成更新后的新合并链接</button>
+                        <button class="mini-btn" onclick="saveSublinkDraft()">保存修改</button>
                     </div>
                     <div id="sublinkList" class="empty-text">请选择一个历史任务。</div>
                 </div>
@@ -801,7 +801,7 @@ https://wa.me/789?text=START"></textarea>
             renderSublinkList();
         }
 
-        async function saveSublinkDraft() {
+        function saveSublinkDraft() {
             if (!activeHistorySetId) {
                 alert('请先选择一个历史任务。');
                 return;
@@ -812,31 +812,21 @@ https://wa.me/789?text=START"></textarea>
                 return;
             }
 
-            try {
-                const nextLinks = editableSublinks.slice();
-                const newId = await createOnlineSet(nextLinks);
-                const newUrl = buildShortUrl(newId);
-
-                const outputDiv = document.getElementById('mergeOutput');
-                outputDiv.innerHTML = `
-                    <div class="link-box">
-                        <label>✅ 已基于历史任务生成新短链接（原ID保持不变）</label>
-                        <input type="text" value="${newUrl}" readonly style="margin-top: 10px; font-size: 14px;">
-                        <button class="copy-btn" onclick="copyToClipboard(this)">📋 复制新链接</button>
-                        <button onclick="setStatsId('${newId}')">📊 查看新链接统计</button>
-                        <div class="success-msg">原历史链接 ${activeHistorySetId} 不会被修改，已生成新链接 ${newId}</div>
-                    </div>
-                `;
-
-                prefillStatsId(newId);
-                await fetchHistory();
-                openSublinkEditor(newId);
-            } catch (error) {
-                if (handleAuthFailure(error)) {
-                    return;
-                }
-                alert('生成新合并链接失败：' + error.message);
+            const targetItem = historySetMap.get(activeHistorySetId);
+            if (targetItem) {
+                targetItem.links = editableSublinks.slice();
+                targetItem.count = editableSublinks.length;
             }
+
+            renderSublinkList();
+
+            const outputDiv = document.getElementById('mergeOutput');
+            outputDiv.innerHTML = `
+                <div class="link-box">
+                    <label>✅ 已保存子链接编辑草稿</label>
+                    <div class="success-msg">原历史链接 ${activeHistorySetId} 保持不变，且未生成新的合并链接。</div>
+                </div>
+            `;
         }
 
         async function fetchStats(id) {
