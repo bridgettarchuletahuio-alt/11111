@@ -801,7 +801,7 @@ https://wa.me/789?text=START"></textarea>
             renderSublinkList();
         }
 
-        function saveSublinkDraft() {
+        async function saveSublinkDraft() {
             if (!activeHistorySetId) {
                 alert('请先选择一个历史任务。');
                 return;
@@ -812,21 +812,42 @@ https://wa.me/789?text=START"></textarea>
                 return;
             }
 
-            const targetItem = historySetMap.get(activeHistorySetId);
-            if (targetItem) {
-                targetItem.links = editableSublinks.slice();
-                targetItem.count = editableSublinks.length;
+            const saveBtn = document.querySelector('#sublinkEditor .mini-btn:last-of-type');
+            if (saveBtn) {
+                saveBtn.textContent = '保存中...';
+                saveBtn.disabled = true;
             }
 
-            renderSublinkList();
+            try {
+                await apiPost({ action: 'updateSet', id: activeHistorySetId, links: editableSublinks.slice() });
 
-            const outputDiv = document.getElementById('mergeOutput');
-            outputDiv.innerHTML = `
-                <div class="link-box">
-                    <label>✅ 已保存子链接编辑草稿</label>
-                    <div class="success-msg">原历史链接 ${activeHistorySetId} 保持不变，且未生成新的合并链接。</div>
-                </div>
-            `;
+                const targetItem = historySetMap.get(activeHistorySetId);
+                if (targetItem) {
+                    targetItem.links = editableSublinks.slice();
+                    targetItem.count = editableSublinks.length;
+                }
+
+                renderSublinkList();
+
+                const outputDiv = document.getElementById('mergeOutput');
+                const shortUrl = buildShortUrl(activeHistorySetId);
+                outputDiv.innerHTML = `
+                    <div class="link-box">
+                        <label>✅ 已成功保存修改（共 ${editableSublinks.length} 个链接）</label>
+                        <input type="text" value="${shortUrl}" readonly style="margin-top: 10px; font-size: 14px;">
+                        <button class="copy-btn" onclick="copyToClipboard(this)">📋 复制链接</button>
+                        <div class="success-msg">原短链 ${activeHistorySetId} 保持不变，子链接已在服务端更新，轮询计数已重置为 0。</div>
+                    </div>
+                `;
+            } catch (error) {
+                if (handleAuthFailure(error)) return;
+                alert('保存失败：' + error.message);
+            } finally {
+                if (saveBtn) {
+                    saveBtn.textContent = '保存修改';
+                    saveBtn.disabled = false;
+                }
+            }
         }
 
         async function fetchStats(id) {
