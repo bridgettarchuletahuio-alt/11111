@@ -356,20 +356,22 @@ async function updateSet(env, payload, access) {
 
     const now = new Date().toISOString();
 
-    const row = await env.DB.prepare('SELECT id, owner_code FROM link_sets WHERE id = ?').bind(id).first();
+    const row = await env.DB.prepare('SELECT id, owner_code, current_index FROM link_sets WHERE id = ?').bind(id).first();
     if (!row) throw httpError(404, '链接组不存在');
 
     if (access.mode === 'owner' && row.owner_code !== access.owner.code) {
         throw httpError(403, '无权修改该链接组');
     }
 
+    const keepIndex = Math.min(Number(row.current_index || 0), links.length - 1);
+
     await env.DB.prepare(
-        'UPDATE link_sets SET links_json = ?, current_index = 0, updated_at = ? WHERE id = ?'
-    ).bind(JSON.stringify(links), now, id).run();
+        'UPDATE link_sets SET links_json = ?, current_index = ?, updated_at = ? WHERE id = ?'
+    ).bind(JSON.stringify(links), keepIndex, now, id).run();
 
     setLinksMemoryCache(env, id, links);
     await setLinksKvCache(env, id, links);
-    await initDurableSet(env, id, links, 0);
+    await initDurableSet(env, id, links, keepIndex);
 }
 
 async function createSet(env, payload, access) {
