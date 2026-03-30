@@ -356,10 +356,10 @@ async function updateSet(env, payload, access) {
 
     const now = new Date().toISOString();
 
-    const row = await env.DB.prepare('SELECT id, owner_code, current_index FROM link_sets WHERE id = ?').bind(id).first();
+    const row = await env.DB.prepare('SELECT id, current_index FROM link_sets WHERE id = ?').bind(id).first();
     if (!row) throw httpError(404, '链接组不存在');
 
-    if (access.mode === 'owner' && row.owner_code !== access.owner.code) {
+    if (access.mode === 'owner' && extractOwnerCodeFromId(row.id) !== access.owner.code) {
         throw httpError(403, '无权修改该链接组');
     }
 
