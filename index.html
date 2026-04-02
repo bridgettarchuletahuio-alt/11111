@@ -222,6 +222,103 @@
             color: #666;
             font-size: 12px;
         }
+        .history-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .history-status {
+            color: #666;
+            font-size: 12px;
+        }
+        .history-controls {
+            margin-top: 8px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .history-search-input {
+            flex: 1;
+            min-width: 220px;
+            padding: 8px 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .history-page-status {
+            color: #666;
+            font-size: 12px;
+            min-width: 84px;
+            text-align: center;
+        }
+        .allocation-editor {
+            margin-top: 12px;
+            border: 1px solid #e6e6e6;
+            border-radius: 6px;
+            background: #fff;
+            padding: 10px;
+        }
+        .allocation-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+        }
+        .allocation-title {
+            font-size: 14px;
+            color: #333;
+            font-weight: 600;
+        }
+        .allocation-note {
+            color: #666;
+            font-size: 12px;
+        }
+        .allocation-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .allocation-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 8px;
+            align-items: center;
+            border: 1px solid #ededed;
+            border-radius: 5px;
+            padding: 8px;
+        }
+        .allocation-url {
+            word-break: break-all;
+            color: #0d4f9c;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .allocation-counter {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .count-chip {
+            min-width: 40px;
+            text-align: center;
+            font-size: 13px;
+            color: #222;
+            font-weight: 600;
+        }
+        .count-btn {
+            margin-top: 0;
+            padding: 6px 10px;
+            font-size: 14px;
+            background: #6c757d;
+        }
+        .count-btn:hover {
+            background: #5a6268;
+        }
         .sublink-editor {
             margin-top: 12px;
             border: 1px solid #e7e7e7;
@@ -360,15 +457,32 @@
             <textarea id="mergeInput" rows="8" placeholder="输入链接，每行一个，例如：
 https://wa.me/123?text=START
 https://wa.me/456?text=START
-https://wa.me/789?text=START"></textarea>
+https://wa.me/789?text=START" oninput="syncMergeAllocationFromTextarea()"></textarea>
+            <div id="allocationEditor" class="allocation-editor">
+                <div class="allocation-header">
+                    <div class="allocation-title">分配比例（默认 1:1:1）</div>
+                    <div id="allocationSummary" class="allocation-note">请先输入链接。</div>
+                </div>
+                <div id="allocationList" class="allocation-list empty-text">输入链接后可用 + / - 调整每个链接分配次数。</div>
+            </div>
             <input type="text" id="mergeNameInput" placeholder="（可选）给这个合并链接取个名字" maxlength="120" style="width:100%; padding:10px; margin-top:10px; border:1px solid #ddd; border-radius:4px; font-size:14px;">
             <button onclick="mergeLinks()">生成合并链接</button>
             <div id="mergeOutput"></div>
 
             <div class="panel">
-                <div class="mini-row" style="justify-content: space-between; align-items: center;">
+                <div class="history-toolbar">
                     <h3>历史记录</h3>
-                    <button class="mini-btn" onclick="fetchHistory()">刷新历史</button>
+                    <div class="mini-row">
+                        <button id="loadMoreHistoryButton" class="mini-btn secondary-btn" onclick="loadMoreHistory()" disabled>加载更多</button>
+                        <button class="mini-btn" onclick="resetAndFetchHistory()">刷新历史</button>
+                    </div>
+                </div>
+                <div id="historyStatus" class="history-status">正在加载历史记录...</div>
+                <div class="history-controls">
+                    <input id="historySearchInput" class="history-search-input" type="text" placeholder="搜索历史：ID 或 名称" oninput="onHistorySearchInput()">
+                    <button id="historyPrevPageBtn" class="mini-btn secondary-btn" onclick="historyPrevPage()" disabled>上一页</button>
+                    <span id="historyPageStatus" class="history-page-status">第 1/1 页</span>
+                    <button id="historyNextPageBtn" class="mini-btn secondary-btn" onclick="historyNextPage()" disabled>下一页</button>
                 </div>
                 <div id="historyOutput" class="empty-text">正在加载历史记录...</div>
                 <div id="sublinkEditor" class="sublink-editor" hidden>
@@ -425,6 +539,13 @@ https://wa.me/789?text=START"></textarea>
         let activeHistorySetId = '';
         let editableSublinks = [];
         let activeHistorySetName = '';
+        const HISTORY_FETCH_STEP = 20;
+        const HISTORY_PAGE_SIZE = 8;
+        let historyFetchLimit = HISTORY_FETCH_STEP;
+        let historyHasMore = false;
+        let historyCurrentPage = 1;
+        let historyItemsCache = [];
+        let mergeAllocationEntries = [];
 
         const normalizedWorkerBaseUrl = MIGRATION_CONFIG.workerBaseUrl.replace(/\/+$/, '');
         const SCRIPT_URL = MIGRATION_CONFIG.useWorker
@@ -516,6 +637,80 @@ https://wa.me/789?text=START"></textarea>
                 (payload.data && (payload.data.id || payload.data.hash || payload.data.key)) || null;
         }
 
+        function getMergeLinksFromTextarea() {
+            const raw = document.getElementById('mergeInput').value;
+            return raw.split('\n')
+                .map(link => link.trim())
+                .filter(link => /^https?:\/\//i.test(link));
+        }
+
+        function syncMergeAllocationFromTextarea() {
+            const links = getMergeLinksFromTextarea();
+            const prevEntries = mergeAllocationEntries.slice();
+
+            mergeAllocationEntries = links.map((url, idx) => {
+                const prev = prevEntries[idx];
+                if (prev && prev.url === url) {
+                    return { url, count: Math.max(1, Number(prev.count || 1)) };
+                }
+                return { url, count: 1 };
+            });
+
+            renderMergeAllocationEditor();
+        }
+
+        function renderMergeAllocationEditor() {
+            const listEl = document.getElementById('allocationList');
+            const summaryEl = document.getElementById('allocationSummary');
+
+            if (!mergeAllocationEntries.length) {
+                listEl.className = 'allocation-list empty-text';
+                listEl.textContent = '输入链接后可用 + / - 调整每个链接分配次数。';
+                summaryEl.textContent = '请先输入链接。';
+                return;
+            }
+
+            const totalCount = mergeAllocationEntries.reduce((sum, item) => sum + Math.max(1, Number(item.count || 1)), 0);
+            summaryEl.textContent = '共 ' + mergeAllocationEntries.length + ' 个链接，当前总分配次数 ' + totalCount + '。';
+            listEl.className = 'allocation-list';
+            listEl.innerHTML = mergeAllocationEntries.map((item, idx) => {
+                const safeUrl = String(item.url || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const count = Math.max(1, Number(item.count || 1));
+                return `
+                    <div class="allocation-row">
+                        <div class="allocation-url">${safeUrl}</div>
+                        <div class="allocation-counter">
+                            <button class="count-btn" onclick="adjustAllocationCount(${idx}, -1)">-</button>
+                            <span class="count-chip">${count}</span>
+                            <button class="count-btn" onclick="adjustAllocationCount(${idx}, 1)">+</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function adjustAllocationCount(index, delta) {
+            const target = mergeAllocationEntries[index];
+            if (!target) {
+                return;
+            }
+
+            const nextCount = Math.max(1, Number(target.count || 1) + Number(delta || 0));
+            target.count = nextCount;
+            renderMergeAllocationEditor();
+        }
+
+        function buildExpandedLinksByAllocation() {
+            const expanded = [];
+            mergeAllocationEntries.forEach(item => {
+                const count = Math.max(1, Number(item.count || 1));
+                for (let i = 0; i < count; i += 1) {
+                    expanded.push(item.url);
+                }
+            });
+            return expanded;
+        }
+
         async function createOnlineSet(links, name) {
             const payload = await apiPost({ action: 'createSet', links, ...(name ? { name } : {}) });
             const id = extractIdFromResponse(payload);
@@ -546,8 +741,16 @@ https://wa.me/789?text=START"></textarea>
             document.getElementById('auth-overlay').style.display = 'flex';
             document.getElementById('auth-error').textContent = message || '';
             updateSessionUi(null);
+            historyItemsCache = [];
+            historyCurrentPage = 1;
             document.getElementById('historyOutput').className = 'empty-text';
             document.getElementById('historyOutput').textContent = '登录后可查看当前密码的历史记录。';
+            document.getElementById('historyStatus').textContent = '登录后可查看当前密码的历史记录。';
+            document.getElementById('loadMoreHistoryButton').disabled = true;
+            document.getElementById('historySearchInput').value = '';
+            document.getElementById('historyPrevPageBtn').disabled = true;
+            document.getElementById('historyNextPageBtn').disabled = true;
+            document.getElementById('historyPageStatus').textContent = '第 1/1 页';
             document.getElementById('statsOutput').className = 'empty-text';
             document.getElementById('statsOutput').textContent = '登录后输入ID可查看该密码下的点击统计。';
         }
@@ -596,6 +799,135 @@ https://wa.me/789?text=START"></textarea>
             document.getElementById('distributeOutput').textContent = '';
             showLockedState('');
             document.getElementById('auth-input').focus();
+        }
+
+        function updateHistoryToolbarState(loadedCount, filteredCount) {
+            const statusEl = document.getElementById('historyStatus');
+            const loadMoreBtn = document.getElementById('loadMoreHistoryButton');
+
+            historyHasMore = loadedCount >= historyFetchLimit;
+            loadMoreBtn.disabled = !historyHasMore;
+
+            if (loadedCount === 0) {
+                statusEl.textContent = '当前密码下暂无历史记录。';
+                return;
+            }
+
+            const hasFilter = Number(filteredCount) < Number(loadedCount);
+
+            if (historyHasMore) {
+                statusEl.textContent = hasFilter
+                    ? '当前筛选命中 ' + filteredCount + ' 条（已加载 ' + loadedCount + ' 条），可继续“加载更多”。'
+                    : '当前已加载 ' + loadedCount + ' 条，点击“加载更多”可查看更早记录。';
+                return;
+            }
+
+            statusEl.textContent = hasFilter
+                ? '当前筛选命中 ' + filteredCount + ' 条（全部历史共 ' + loadedCount + ' 条）。'
+                : '已显示全部历史记录，共 ' + loadedCount + ' 条。';
+        }
+
+        function getHistoryFilteredItems() {
+            const keyword = document.getElementById('historySearchInput').value.trim().toLowerCase();
+            if (!keyword) {
+                return historyItemsCache.slice();
+            }
+
+            return historyItemsCache.filter(item => {
+                const id = String(item.id || item.hash || item.key || '').toLowerCase();
+                const name = String(item.name || '').toLowerCase();
+                return id.includes(keyword) || name.includes(keyword);
+            });
+        }
+
+        function updateHistoryPager(totalCount) {
+            const prevBtn = document.getElementById('historyPrevPageBtn');
+            const nextBtn = document.getElementById('historyNextPageBtn');
+            const statusEl = document.getElementById('historyPageStatus');
+            const totalPages = Math.max(1, Math.ceil(totalCount / HISTORY_PAGE_SIZE));
+
+            historyCurrentPage = Math.max(1, Math.min(historyCurrentPage, totalPages));
+            prevBtn.disabled = historyCurrentPage <= 1 || totalCount === 0;
+            nextBtn.disabled = historyCurrentPage >= totalPages || totalCount === 0;
+            statusEl.textContent = '第 ' + historyCurrentPage + '/' + totalPages + ' 页';
+        }
+
+        function renderHistoryList() {
+            const output = document.getElementById('historyOutput');
+            const filteredItems = getHistoryFilteredItems();
+            updateHistoryToolbarState(historyItemsCache.length, filteredItems.length);
+            updateHistoryPager(filteredItems.length);
+
+            if (filteredItems.length === 0) {
+                output.className = 'empty-text';
+                output.textContent = historyItemsCache.length === 0
+                    ? '当前密码下暂无历史记录。'
+                    : '没有匹配的历史记录，请换个关键词试试。';
+                return;
+            }
+
+            const start = (historyCurrentPage - 1) * HISTORY_PAGE_SIZE;
+            const pageItems = filteredItems.slice(start, start + HISTORY_PAGE_SIZE);
+
+            output.className = '';
+            output.innerHTML = pageItems.map(item => {
+                const id = item.id || item.hash || item.key || '';
+                if (id) {
+                    historySetMap.set(id, item);
+                }
+                const createdAt = item.createdAt || item.created_at || item.time || '-';
+                const count = item.count != null ? item.count : (Array.isArray(item.links) ? item.links.length : '-');
+                const ownerLabel = item.ownerLabel || item.owner_label || '';
+                const shortUrl = buildShortUrl(id);
+                const ownerText = ownerLabel ? ' | 归属: ' + ownerLabel : '';
+                const itemName = String(item.name || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+                return `
+                    <div class="history-item">
+                        ${itemName ? `<div style="font-weight:600; font-size:15px; color:#222; margin-bottom:4px;">${itemName}</div>` : ''}
+                        <div><strong>ID:</strong> ${id || '(未知)'}</div>
+                        <div class="history-meta">创建时间: ${createdAt} | 链接数: ${count}${ownerText}</div>
+                        <div class="url-preview">${shortUrl}</div>
+                        <div class="mini-row" style="margin-top: 8px;">
+                            <button class="mini-btn copy-btn" onclick="copyText('${shortUrl.replace(/'/g, "&#39;")}', this)">复制短链</button>
+                            <button class="mini-btn" onclick="setStatsId('${String(id).replace(/'/g, "&#39;")}')">查看统计</button>
+                            <button class="mini-btn secondary-btn" onclick="openSublinkEditor('${String(id).replace(/'/g, "&#39;")}')">管理子链接</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function onHistorySearchInput() {
+            historyCurrentPage = 1;
+            renderHistoryList();
+        }
+
+        function historyPrevPage() {
+            if (historyCurrentPage <= 1) {
+                return;
+            }
+            historyCurrentPage -= 1;
+            renderHistoryList();
+        }
+
+        function historyNextPage() {
+            historyCurrentPage += 1;
+            renderHistoryList();
+        }
+
+        function loadMoreHistory() {
+            if (!historyHasMore) {
+                return;
+            }
+            historyFetchLimit += HISTORY_FETCH_STEP;
+            fetchHistory();
+        }
+
+        function resetAndFetchHistory() {
+            historyFetchLimit = HISTORY_FETCH_STEP;
+            historyCurrentPage = 1;
+            fetchHistory();
         }
 
         function extractHistoryItems(payload) {
@@ -651,53 +983,38 @@ https://wa.me/789?text=START"></textarea>
 
         async function fetchHistory() {
             const output = document.getElementById('historyOutput');
+            const statusEl = document.getElementById('historyStatus');
+            const loadMoreBtn = document.getElementById('loadMoreHistoryButton');
             output.className = 'empty-text';
             output.textContent = '历史加载中...';
+            statusEl.textContent = '历史加载中...';
+            loadMoreBtn.disabled = true;
             historySetMap.clear();
+            document.getElementById('historyPrevPageBtn').disabled = true;
+            document.getElementById('historyNextPageBtn').disabled = true;
 
             try {
-                const payload = await apiPost({ action: 'listSets', limit: 20 });
+                const payload = await apiPost({ action: 'listSets', limit: historyFetchLimit });
                 const items = extractHistoryItems(payload);
+                historyItemsCache = items;
 
                 if (items.length === 0) {
                     output.className = 'empty-text';
                     output.textContent = '当前密码下暂无历史记录。';
+                    updateHistoryToolbarState(0, 0);
+                    updateHistoryPager(0);
                     return;
                 }
 
-                output.className = '';
-                output.innerHTML = items.map(item => {
-                    const id = item.id || item.hash || item.key || '';
-                    if (id) {
-                        historySetMap.set(id, item);
-                    }
-                    const createdAt = item.createdAt || item.created_at || item.time || '-';
-                    const count = item.count != null ? item.count : (Array.isArray(item.links) ? item.links.length : '-');
-                    const ownerLabel = item.ownerLabel || item.owner_label || '';
-                    const shortUrl = buildShortUrl(id);
-                    const ownerText = ownerLabel ? ' | 归属: ' + ownerLabel : '';
-                    const itemName = String(item.name || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-                    return `
-                        <div class="history-item">
-                            ${itemName ? `<div style="font-weight:600; font-size:15px; color:#222; margin-bottom:4px;">${itemName}</div>` : ''}
-                            <div><strong>ID:</strong> ${id || '(未知)'}</div>
-                            <div class="history-meta">创建时间: ${createdAt} | 链接数: ${count}${ownerText}</div>
-                            <div class="url-preview">${shortUrl}</div>
-                            <div class="mini-row" style="margin-top: 8px;">
-                                <button class="mini-btn copy-btn" onclick="copyText('${shortUrl.replace(/'/g, "&#39;")}', this)">复制短链</button>
-                                <button class="mini-btn" onclick="setStatsId('${String(id).replace(/'/g, "&#39;")}')">查看统计</button>
-                                <button class="mini-btn secondary-btn" onclick="openSublinkEditor('${String(id).replace(/'/g, "&#39;")}')">管理子链接</button>
-                            </div>
-                        </div>
-                    `;
-                }).join('');
+                renderHistoryList();
             } catch (error) {
                 if (handleAuthFailure(error)) {
                     return;
                 }
                 output.className = 'empty-text';
                 output.textContent = '历史加载失败：' + error.message;
+                statusEl.textContent = '历史加载失败，请稍后重试。';
+                document.getElementById('historyPageStatus').textContent = '第 1/1 页';
             }
         }
 
@@ -910,18 +1227,16 @@ https://wa.me/789?text=START"></textarea>
 
         async function mergeLinks() {
             try {
-                const input = document.getElementById('mergeInput').value.trim();
-                if (!input) {
+                syncMergeAllocationFromTextarea();
+
+                if (!mergeAllocationEntries.length) {
                     alert('请输入至少一个链接！');
                     return;
                 }
-                
-                const links = input.split('\n')
-                    .map(link => link.trim())
-                    .filter(link => link && link.startsWith('http'));
-                
+
+                const links = buildExpandedLinksByAllocation();
                 if (links.length === 0) {
-                    alert('未找到有效的链接！请确保每个链接都以http://或https://开头');
+                    alert('未找到有效的分配链接，请检查输入。');
                     return;
                 }
 
@@ -934,9 +1249,10 @@ https://wa.me/789?text=START"></textarea>
 
                 // 显示结果
                 const outputDiv = document.getElementById('mergeOutput');
+                const ratioText = mergeAllocationEntries.map(item => String(Math.max(1, Number(item.count || 1)))).join(':');
                 outputDiv.innerHTML = `
                     <div class="link-box">
-                        <label>✅ 成功生成短链接！(${links.length} 个)</label>
+                        <label>✅ 成功生成短链接！（分配比例 ${ratioText}，总次数 ${links.length}）</label>
                         <input type="text" value="${mergedUrl}" readonly style="margin-top: 10px; font-size: 14px;">
                         <button class="copy-btn" onclick="copyToClipboard(this)">📋 复制链接</button>
                         <button onclick="setStatsId('${id}')">📊 查看该链接统计</button>
@@ -1011,6 +1327,8 @@ https://wa.me/789?text=START"></textarea>
         }
 
         document.getElementById('historyOutput').textContent = '登录后可查看当前密码的历史记录。';
+        document.getElementById('historyStatus').textContent = '登录后可查看当前密码的历史记录。';
+        renderMergeAllocationEditor();
         // 密码保护
         document.getElementById('auth-input').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') checkPassword();
