@@ -351,6 +351,7 @@
         
         <div class="mode-selector">
             <button class="tab-button active" onclick="switchTab('merge')">合并链接</button>
+            <button class="tab-button" onclick="switchTab('admin')" id="adminTab" hidden>账号管理</button>
             <button class="tab-button" onclick="switchTab('distribute')">分配链接</button>
         </div>
 
@@ -419,6 +420,16 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
             <textarea id="distributeInput" rows="3" placeholder="例如：https://example.com/redirect.html#abc123" style="margin-top: 10px;"></textarea>
             <button onclick="openDistributedLink()" style="width: 100%; margin-top: 10px;">🚀 打开链接</button>
             <div id="distributeOutput" style="margin-top: 10px;"></div>
+        </div>
+
+        <!-- 账号管理模式 -->
+        <div id="admin" class="tab-content">
+            <h2>账号管理</h2>
+            <div class="info-text">
+                📌 管理员可以授权或禁用用户账号。未授权的账号无法登录。
+            </div>
+            <button class="mini-btn" onclick="fetchUserList()">刷新用户列表</button>
+            <div id="userListOutput" class="empty-text">正在加载用户列表...</div>
         </div>
     </div>
 
@@ -539,6 +550,11 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                 accountInfo.hidden = false;
                 accountInfo.textContent = user.username + (user.role === 'admin' ? '（管理员）' : '') + ' 已登录';
                 logoutButton.hidden = false;
+                if (user.role === 'admin') {
+                    document.getElementById('adminTab').hidden = false;
+                } else {
+                    document.getElementById('adminTab').hidden = true;
+                }
                 return;
             }
             accountInfo.hidden = true;
@@ -934,7 +950,8 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
             const buttons = document.querySelectorAll('.tab-button');
             buttons.forEach(btn => {
                 if ((tab === 'merge' && btn.textContent.includes('合并')) ||
-                    (tab === 'distribute' && btn.textContent.includes('分配'))) {
+                    (tab === 'distribute' && btn.textContent.includes('分配')) ||
+                    (tab === 'admin' && btn.textContent.includes('账号管理'))) {
                     btn.classList.add('active');
                 }
             });
@@ -1142,6 +1159,74 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                 errEl.textContent = error.message || '操作失败';
             }
         }
+        async function fetchUserList() {
+            const output = document.getElementById('userListOutput');
+            output.className = 'empty-text';
+            output.textContent = '加载中...';
+
+            try {
+                const payload = await apiPost({ action: 'listUsers' });
+                const users = payload.users || [];
+
+                if (users.length === 0) {
+                    output.className = 'empty-text';
+                    output.textContent = '暂无用户。';
+                    return;
+                }
+
+                output.className = '';
+                output.innerHTML = users.map(user => {
+                    const statusText = user.is_authorized ? '✅ 已授权' : '❌ 未授权';
+                    const statusColor = user.is_authorized ? '#28a745' : '#dc3545';
+                    const roleText = user.role === 'admin' ? '（管理员）' : '';
+                    const canRevoke = user.role !== 'admin'; // 不能撤销管理员
+
+                    return `
+                        <div class="history-item" style="display:flex;justify-content:space-between;align-items:center;">
+                            <div>
+                                <strong>${user.username}</strong> ${roleText}
+                                <div class="history-meta">
+                                    <span style="color:${statusColor};">${statusText}</span>
+                                    <span style="margin-left:10px;">注册时间：${new Date(user.created_at).toLocaleString()}</span>
+                                </div>
+                            </div>
+                            <div style="display:flex;gap:8px;">
+                                ${!user.is_authorized ? `<button class="mini-btn" onclick="authorizeUser(${user.id})">授权</button>` : ''}
+                                ${canRevoke && user.is_authorized ? `<button class="mini-btn danger-btn" onclick="revokeUser(${user.id})">禁用</button>` : ''}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (error) {
+                output.className = 'empty-text';
+                output.textContent = '加载失败：' + (error.message || '未知错误');
+            }
+        }
+
+        async function authorizeUser(userId) {
+            if (!confirm('确定要授权这个账号吗？')) return;
+
+            try {
+                await apiPost({ action: 'authorizeUser', userId });
+                alert('授权成功');
+                fetchUserList();
+            } catch (error) {
+                alert('授权失败：' + (error.message || '未知错误'));
+            }
+        }
+
+        async function revokeUser(userId) {
+            if (!confirm('确定要禁用这个账号吗？')) return;
+
+            try {
+                await apiPost({ action: 'revokeUser', userId });
+                alert('禁用成功');
+                fetchUserList();
+            } catch (error) {
+                alert('禁用失败：' + (error.message || '未知错误'));
+            }
+        }
+
         restoreLogin();
     </script>
 </body>
