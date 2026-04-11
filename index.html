@@ -360,10 +360,6 @@
             <div class="info-text">
                 📌 输入多个链接，生成一个特殊URL。用户访问该URL后会按顺序获取每个链接。
             </div>
-            <div style="margin-bottom: 10px;">
-                <label>链接集合名称（可选）：</label>
-                <input type="text" id="mergeSetName" placeholder="例如：WhatsApp 营销链接" maxlength="120" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
-            </div>
             <textarea id="mergeInput" rows="8" placeholder="输入链接，每行一个，例如：
 https://wa.me/123?text=START
 https://wa.me/456?text=START
@@ -387,6 +383,10 @@ https://wa.me/789?text=START"></textarea>
                     <div class="mini-row" style="justify-content: space-between; align-items: center;">
                         <strong id="sublinkEditorTitle">子链接管理</strong>
                         <button class="mini-btn secondary-btn" onclick="closeSublinkEditor()">关闭</button>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <label>链接集合名称（可选）：</label>
+                        <input type="text" id="sublinkEditorName" placeholder="例如：WhatsApp 营销链接" maxlength="120" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; margin-top: 4px;">
                     </div>
                     <div class="muted-note">历史合并链接不会被修改或删除。你在这里编辑的是副本，保存后会生成一个新的合并链接。</div>
                     <div class="mini-row" style="margin-top: 10px;">
@@ -715,6 +715,7 @@ https://wa.me/789?text=START"></textarea>
             document.getElementById('sublinkEditor').hidden = true;
             document.getElementById('sublinkList').className = 'empty-text';
             document.getElementById('sublinkList').textContent = '请选择一个历史任务。';
+            document.getElementById('sublinkEditorName').value = '';
         }
 
         function openSublinkEditor(id) {
@@ -739,6 +740,7 @@ https://wa.me/789?text=START"></textarea>
             const editor = document.getElementById('sublinkEditor');
             editor.hidden = false;
             document.getElementById('sublinkEditorTitle').textContent = '子链接管理（来源ID: ' + id + '）';
+            document.getElementById('sublinkEditorName').value = item.name || '';
             renderSublinkList();
         }
 
@@ -881,11 +883,13 @@ https://wa.me/789?text=START"></textarea>
                 const links = editableSublinks.map(l =>
                     typeof l === 'string' ? l : (l.url || '')
                 ).filter(Boolean);
+                const name = document.getElementById('sublinkEditorName').value.trim();
                 // 用统一的 apiPost 方法，自动带密码
                 const resp = await apiPost({
                     action: 'updateSet',
                     id: activeHistorySetId,
-                    links
+                    links,
+                    name
                 });
                 if (!resp || resp.error) throw new Error(resp && resp.error ? resp.error : '保存失败');
                 alert('子链接修改已保存（已同步云端，历史ID未变动）');
@@ -945,7 +949,7 @@ https://wa.me/789?text=START"></textarea>
         async function mergeLinks() {
             try {
                 const input = document.getElementById('mergeInput').value.trim();
-                const name = document.getElementById('mergeSetName').value.trim();
+                const name = '';
                 if (!input) {
                     alert('请输入至少一个链接！');
                     return;
@@ -978,7 +982,6 @@ https://wa.me/789?text=START"></textarea>
                     </div>
                 `;
 
-                document.getElementById('mergeSetName').value = '';
                 prefillStatsId(id);
                 fetchHistory();
 
