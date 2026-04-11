@@ -297,6 +297,43 @@ async function migrateClickLogs(client, rows) {
   return { inserted, skipped, errors };
 }
 
+/**
+ * Assign orphaned link_sets (owner_id IS NULL) to a specific user.
+ *
+ * Looks up the user by username in PostgreSQL, then runs:
+ *   UPDATE link_sets SET owner_id = <id> WHERE owner_id IS NULL
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {string} username  – e.g. 'wcb8881200'
+ * @returns {Promise<{ username: string, userId: number|null, updated: number }>}
+ */
+async function assignOrphanedLinkSets(client, username) {
+  // Look up the user's id
+  const userRes = await client.query(
+    'SELECT id FROM users WHERE username = $1',
+    [username]
+  );
+
+  if (userRes.rows.length === 0) {
+    console.warn(`[migrate] User "${username}" not found in PostgreSQL — skipping orphan assignment.`);
+    return { username, userId: null, updated: 0 };
+  }
+
+  const userId = userRes.rows[0].id;
+
+  const updateRes = await client.query(
+    'UPDATE link_sets SET owner_id = $1 WHERE owner_id IS NULL',
+    [userId]
+  );
+
+  const updated = updateRes.rowCount || 0;
+  console.log(
+    `[migrate] Assigned ${updated} orphaned link_set(s) to user "${username}" (id=${userId}).`
+  );
+
+  return { username, userId, updated };
+}
+
 // ─── Ensure PostgreSQL tables exist ──────────────────────────────────────────
 
 async function ensureTables(client) {
@@ -391,6 +428,9 @@ async function runCloudflareD1Migration(opts = {}) {
       `skipped: ${linkSetStats.skipped}, errors: ${linkSetStats.errors}`
     );
 
+    console.log('[migrate] Assigning orphaned link_sets to user "wcb8881200"…');
+    const orphanStats = await assignOrphanedLinkSets(client, 'wcb8881200');
+
     console.log('[migrate] Migrating click_logs…');
     const clickLogStats = await migrateClickLogs(client, clickLogRows);
     console.log(
@@ -408,10 +448,11 @@ async function runCloudflareD1Migration(opts = {}) {
     }
 
     return {
-      success:   true,
-      users:     userStats,
-      linkSets:  linkSetStats,
-      clickLogs: clickLogStats,
+      success:      true,
+      users:        userStats,
+      linkSets:     linkSetStats,
+      orphanAssign: orphanStats,
+      clickLogs:    clickLogStats,
     };
   } catch (err) {
     await client.query('ROLLBACK');
@@ -455,6 +496,10 @@ if (require.main === module) {
     console.log(`│ click_logs       │ ${String(stats.clickLogs.inserted).padEnd(8)} │ ${String(stats.clickLogs.skipped).padEnd(8)} │ ${String(stats.clickLogs.errors).padEnd(14)} │`);
     console.log('└──────────────────┴──────────┴──────────┴────────────────┘');
     console.log('');
+    console.log(
+      `Orphan assignment: ${stats.orphanAssign.updated} link_set(s) assigned to ` +
+      `"${stats.orphanAssign.username}" (id=${stats.orphanAssign.userId}).`
+    );
     console.log('Note: users were not migrated from D1 (_cf_KV is inaccessible via API).');
   }).catch((err) => {
     console.error('[migrate] Unhandled error:', err);
