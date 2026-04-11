@@ -158,6 +158,8 @@ async function handleAction(action, payload, req) {
       return handleNextUrl(payload, req);
     case 'getStats':
       return handleGetStats(payload, req);
+    case 'updateSet':
+      return handleUpdateSet(payload, req);
     default:
       throw httpError(400, 'Unsupported action');
   }
@@ -292,6 +294,41 @@ async function handleCreateSet(payload, req) {
     await client.query(
       'INSERT INTO link_sets (id, name, links_json, current_index, click_count, created_at, updated_at, owner_id) VALUES ($1, $2, $3, 0, 0, $4, $5, $6)',
       [id, name, JSON.stringify(links), now, now, user.id]
+    );
+  } finally {
+    client.release();
+  }
+
+  return { ok: true, id };
+}
+
+// ─── updateSet ────────────────────────────────────────────────────────────────
+
+async function handleUpdateSet(payload, req) {
+  const user = await resolveUser(payload);
+
+  const id = sanitizeId(String(payload.id || '').trim());
+  const links = sanitizeLinks(payload.links);
+  const name = typeof payload.name === 'string' ? payload.name.trim().slice(0, 120) : '';
+  const now = new Date().toISOString();
+
+  const client = await pool.connect();
+  try {
+    // Verify the set exists and belongs to the current user
+    const existing = await client.query(
+      'SELECT id, owner_id FROM link_sets WHERE id = $1',
+      [id]
+    );
+    if (existing.rows.length === 0) {
+      throw httpError(404, '链接集合不存在');
+    }
+    if (existing.rows[0].owner_id !== user.id) {
+      throw httpError(403, '无权修改该链接集合');
+    }
+
+    await client.query(
+      'UPDATE link_sets SET name = $1, links_json = $2, updated_at = $3 WHERE id = $4 AND owner_id = $5',
+      [name, JSON.stringify(links), now, id, user.id]
     );
   } finally {
     client.release();
