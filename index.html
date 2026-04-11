@@ -360,6 +360,10 @@
             <div class="info-text">
                 📌 输入多个链接，生成一个特殊URL。用户访问该URL后会按顺序获取每个链接。
             </div>
+            <div style="margin-bottom: 10px;">
+                <label>链接集合名称（可选）：</label>
+                <input type="text" id="mergeSetName" placeholder="例如：WhatsApp 营销链接" maxlength="120" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+            </div>
             <textarea id="mergeInput" rows="8" placeholder="输入链接，每行一个，例如：
 https://wa.me/123?text=START
 https://wa.me/456?text=START
@@ -523,8 +527,8 @@ https://wa.me/789?text=START"></textarea>
                 (payload.data && (payload.data.id || payload.data.hash || payload.data.key)) || null;
         }
 
-        async function createOnlineSet(links) {
-            const payload = await apiPost({ action: 'createSet', links });
+        async function createOnlineSet(links, name = '') {
+            const payload = await apiPost({ action: 'createSet', links, name });
             const id = extractIdFromResponse(payload);
             if (!id) {
                 throw new Error('接口未返回有效ID');
@@ -941,6 +945,7 @@ https://wa.me/789?text=START"></textarea>
         async function mergeLinks() {
             try {
                 const input = document.getElementById('mergeInput').value.trim();
+                const name = document.getElementById('mergeSetName').value.trim();
                 if (!input) {
                     alert('请输入至少一个链接！');
                     return;
@@ -956,7 +961,7 @@ https://wa.me/789?text=START"></textarea>
                 }
 
                 // 通过在线表格接口创建共享ID，确保不同设备都可访问。
-                const id = await createOnlineSet(links);
+                const id = await createOnlineSet(links, name);
                 
                 // 生成完整的短链接URL
                 const mergedUrl = buildShortUrl(id);
@@ -973,6 +978,7 @@ https://wa.me/789?text=START"></textarea>
                     </div>
                 `;
 
+                document.getElementById('mergeSetName').value = '';
                 prefillStatsId(id);
                 fetchHistory();
 
