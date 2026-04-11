@@ -325,14 +325,17 @@
     </style>
 </head>
 <body>
-    <!-- 密码保护遮罩 -->
+    <!-- 注册/登录遮罩 -->
     <div id="auth-overlay">
         <div class="auth-box">
-            <h2>🔒 访问验证</h2>
-            <p>请输入 8 位密码以继续访问</p>
-            <div class="auth-tip">不同密码登录后，只能查看和生成属于自己的短链记录。</div>
-            <input type="password" id="auth-input" placeholder="请输入 8 位密码" maxlength="32" autocomplete="current-password">
-            <button onclick="checkPassword()">确认</button>
+            <h2 id="auth-title">🔒 登录</h2>
+            <div id="auth-tip" class="auth-tip">首次注册的账号将自动成为管理员</div>
+            <input type="text" id="auth-username" placeholder="用户名" maxlength="32" autocomplete="username">
+            <input type="password" id="auth-password" placeholder="密码" maxlength="32" autocomplete="current-password">
+            <button id="auth-action-btn" onclick="handleAuthAction()">登录</button>
+            <div style="margin-top:10px;">
+                <a href="#" id="toggle-auth-mode" onclick="toggleAuthMode(event)">没有账号？注册</a>
+            </div>
             <div id="auth-error"></div>
         </div>
     </div>
@@ -427,8 +430,8 @@ https://wa.me/789?text=START"></textarea>
             legacyScriptUrl: 'https://script.google.com/macros/s/AKfycbwMYWgW6oBK1VFGhQVfdMiaE-wJU8MSGNLqvwgqvTUPsQJyZswdC_LxKTmqrv8l7IVM/exec',
             legacyPublicBaseUrl: 'https://bridgettarchuletahuio-alt.github.io/11111/'
         };
-        const AUTH_STORAGE_KEY = 'link_dispatch_password';
-        let currentOwner = null;
+        const AUTH_STORAGE_KEY = 'link_dispatch_user';
+        let currentUser = null;
         const historySetMap = new Map();
         let activeHistorySetId = '';
         let editableSublinks = [];
@@ -453,31 +456,32 @@ https://wa.me/789?text=START"></textarea>
                 : baseUrl + 'redirect.html#' + id;
         }
 
-        function getStoredPassword() {
-            return sessionStorage.getItem(AUTH_STORAGE_KEY) || '';
+        function getStoredUser() {
+            const raw = sessionStorage.getItem(AUTH_STORAGE_KEY);
+            if (!raw) return null;
+            try { return JSON.parse(raw); } catch { return null; }
         }
-
-        function setStoredPassword(password) {
-            sessionStorage.setItem(AUTH_STORAGE_KEY, password);
+        function setStoredUser(user) {
+            sessionStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
         }
-
-        function clearStoredPassword() {
+        function clearStoredUser() {
             sessionStorage.removeItem(AUTH_STORAGE_KEY);
         }
 
         function isAuthErrorMessage(message) {
-            return /unauthorized|密码|登录/i.test(String(message || ''));
+            return /unauthorized|密码|登录|用户名/i.test(String(message || ''));
         }
 
         async function apiPost(payload, options = {}) {
             const requestPayload = { ...payload };
-            if (!options.skipStoredPassword) {
-                const storedPassword = getStoredPassword();
-                if (storedPassword && !requestPayload.password) {
-                    requestPayload.password = storedPassword;
+            // 登录/注册不带用户信息，其他接口自动带
+            if (!options.skipStoredUser && !['login','register'].includes(payload.action)) {
+                const storedUser = getStoredUser();
+                if (storedUser) {
+                    requestPayload.username = storedUser.username;
+                    requestPayload.password = storedUser.password;
                 }
             }
-
             const postResp = await fetch(SCRIPT_URL, {
                 method: 'POST',
                 redirect: 'follow',
@@ -486,21 +490,17 @@ https://wa.me/789?text=START"></textarea>
                 },
                 body: JSON.stringify(requestPayload)
             });
-
             const postText = await postResp.text();
             const parsed = tryParseJson(postText);
-
             if (!postResp.ok) {
                 const errorMessage = parsed && typeof parsed === 'object' && parsed.error
                     ? parsed.error
                     : (typeof parsed === 'string' && parsed.trim() ? parsed.trim() : '请求失败');
                 throw new Error(errorMessage);
             }
-
             if (parsed && typeof parsed === 'object' && parsed.error) {
                 throw new Error(parsed.error);
             }
-
             return parsed;
         }
 
@@ -532,18 +532,16 @@ https://wa.me/789?text=START"></textarea>
             return id;
         }
 
-        function updateSessionUi(owner) {
-            currentOwner = owner || null;
+        function updateSessionUi(user) {
+            currentUser = user || null;
             const accountInfo = document.getElementById('accountInfo');
             const logoutButton = document.getElementById('logoutButton');
-
-            if (owner) {
+            if (user) {
                 accountInfo.hidden = false;
-                accountInfo.textContent = owner.label + ' 已登录';
+                accountInfo.textContent = user.username + (user.role === 'admin' ? '（管理员）' : '') + ' 已登录';
                 logoutButton.hidden = false;
                 return;
             }
-
             accountInfo.hidden = true;
             accountInfo.textContent = '';
             logoutButton.hidden = true;
@@ -554,16 +552,19 @@ https://wa.me/789?text=START"></textarea>
             document.getElementById('auth-error').textContent = message || '';
             updateSessionUi(null);
             document.getElementById('historyOutput').className = 'empty-text';
-            document.getElementById('historyOutput').textContent = '登录后可查看当前密码的历史记录。';
+            document.getElementById('historyOutput').textContent = '登录后可查看当前账号的历史记录。';
             document.getElementById('statsOutput').className = 'empty-text';
-            document.getElementById('statsOutput').textContent = '登录后输入ID可查看该密码下的点击统计。';
+            document.getElementById('statsOutput').textContent = '登录后输入ID可查看该账号下的点击统计。';
         }
 
-        function unlockForOwner(owner) {
+        function unlockForUser(user, password) {
             document.getElementById('auth-overlay').style.display = 'none';
             document.getElementById('auth-error').textContent = '';
-            document.getElementById('auth-input').value = '';
-            updateSessionUi(owner);
+            document.getElementById('auth-username').value = '';
+            document.getElementById('auth-password').value = '';
+            // 存储密码用于后续接口
+            setStoredUser({ username: user.username, password, role: user.role, id: user.id });
+            updateSessionUi(user);
             fetchHistory();
         }
 
@@ -571,38 +572,36 @@ https://wa.me/789?text=START"></textarea>
             if (!error || !isAuthErrorMessage(error.message)) {
                 return false;
             }
-
-            clearStoredPassword();
-            showLockedState('登录已失效，请重新输入密码。');
-            document.getElementById('auth-input').focus();
+            clearStoredUser();
+            showLockedState('登录已失效，请重新登录。');
+            document.getElementById('auth-username').focus();
             return true;
         }
 
         async function restoreLogin() {
-            const storedPassword = getStoredPassword();
-            if (!storedPassword) {
+            const storedUser = getStoredUser();
+            if (!storedUser) {
                 showLockedState('');
-                document.getElementById('auth-input').focus();
+                document.getElementById('auth-username').focus();
                 return;
             }
-
             try {
-                const payload = await apiPost({ action: 'login', password: storedPassword }, { skipStoredPassword: true });
-                unlockForOwner(payload.owner);
+                const payload = await apiPost({ action: 'login', username: storedUser.username, password: storedUser.password }, { skipStoredUser: true });
+                unlockForUser(payload.user, storedUser.password);
             } catch (error) {
-                clearStoredPassword();
-                showLockedState('登录已失效，请重新输入密码。');
-                document.getElementById('auth-input').focus();
+                clearStoredUser();
+                showLockedState('登录已失效，请重新登录。');
+                document.getElementById('auth-username').focus();
             }
         }
 
         function logout() {
-            clearStoredPassword();
+            clearStoredUser();
             document.getElementById('mergeOutput').innerHTML = '';
             document.getElementById('statsIdInput').value = '';
             document.getElementById('distributeOutput').textContent = '';
             showLockedState('');
-            document.getElementById('auth-input').focus();
+            document.getElementById('auth-username').focus();
         }
 
         function extractHistoryItems(payload) {
@@ -1038,34 +1037,45 @@ https://wa.me/789?text=START"></textarea>
             window.location.href = buildShortUrl(id);
         }
 
-        document.getElementById('historyOutput').textContent = '登录后可查看当前密码的历史记录。';
-        // 密码保护
-        document.getElementById('auth-input').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') checkPassword();
+        document.getElementById('historyOutput').textContent = '登录后可查看当前账号的历史记录。';
+        // 注册/登录切换逻辑
+        let authMode = 'login'; // 'login' or 'register'
+        function toggleAuthMode(e) {
+            e.preventDefault();
+            authMode = authMode === 'login' ? 'register' : 'login';
+            document.getElementById('auth-title').textContent = authMode === 'login' ? '🔒 登录' : '📝 注册';
+            document.getElementById('auth-action-btn').textContent = authMode === 'login' ? '登录' : '注册';
+            document.getElementById('toggle-auth-mode').textContent = authMode === 'login' ? '没有账号？注册' : '已有账号？登录';
+            document.getElementById('auth-error').textContent = '';
+        }
+        document.getElementById('auth-password').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') handleAuthAction();
         });
-
-        async function checkPassword() {
-            const val = document.getElementById('auth-input').value.trim();
+        async function handleAuthAction() {
+            const username = document.getElementById('auth-username').value.trim();
+            const password = document.getElementById('auth-password').value.trim();
             const errEl = document.getElementById('auth-error');
-            if (!val) {
-                errEl.textContent = '请输入密码。';
-                document.getElementById('auth-input').focus();
+            if (!username || !password) {
+                errEl.textContent = '请输入用户名和密码。';
                 return;
             }
-
-            errEl.textContent = '验证中...';
-
+            errEl.textContent = authMode === 'login' ? '登录中...' : '注册中...';
             try {
-                const payload = await apiPost({ action: 'login', password: val }, { skipStoredPassword: true });
-                setStoredPassword(val);
-                unlockForOwner(payload.owner);
+                if (authMode === 'register') {
+                    const payload = await apiPost({ action: 'register', username, password }, { skipStoredUser: true });
+                    errEl.textContent = '注册成功，请登录。';
+                    authMode = 'login';
+                    document.getElementById('auth-title').textContent = '🔒 登录';
+                    document.getElementById('auth-action-btn').textContent = '登录';
+                    document.getElementById('toggle-auth-mode').textContent = '没有账号？注册';
+                } else {
+                    const payload = await apiPost({ action: 'login', username, password }, { skipStoredUser: true });
+                    unlockForUser(payload.user, password);
+                }
             } catch (error) {
-                errEl.textContent = '密码错误，请重试。';
-                document.getElementById('auth-input').value = '';
-                document.getElementById('auth-input').focus();
+                errEl.textContent = error.message || '操作失败';
             }
         }
-
         restoreLogin();
     </script>
 </body>

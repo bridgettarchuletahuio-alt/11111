@@ -214,23 +214,49 @@ async function handleActionApi(request, env, executionCtx) {
             await setLinksKvCache(env, id, links);
             return json({ ok: true }, 200, request, env);
         }
+
     const payload = await readJson(request);
     const action = String(payload.action || '').trim();
 
+    // 用户注册
+    if (action === 'register') {
+        const username = String(payload.username || '').trim();
+        const password = String(payload.password || '').trim();
+        if (!username || !password) {
+            throw httpError(400, '用户名和密码不能为空');
+        }
+        // 检查是否已存在
+        const exists = await env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).first();
+        if (exists) {
+            throw httpError(409, '用户名已存在');
+        }
+        // 判断是否首个用户
+        const userCountRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM users').first();
+        const isFirst = !userCountRow || Number(userCountRow.cnt) === 0;
+        const role = isFirst ? 'admin' : 'user';
+        const passwordHash = await sha256(password);
+        const now = new Date().toISOString();
+        await env.DB.prepare('INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)')
+            .bind(username, passwordHash, role, now).run();
+        return json({ ok: true, role }, 200, request, env);
+    }
+
+    // 用户登录
     if (action === 'login') {
-        const access = await resolvePasswordAccess(payload.password);
-        if (!access) {
+        const username = String(payload.username || '').trim();
+        const password = String(payload.password || '').trim();
+        if (!username || !password) {
+            throw httpError(400, '用户名和密码不能为空');
+        }
+        const user = await env.DB.prepare('SELECT id, username, password_hash, role FROM users WHERE username = ?').bind(username).first();
+        if (!user) {
+            throw httpError(401, '用户名不存在');
+        }
+        const passwordHash = await sha256(password);
+        if (user.password_hash !== passwordHash) {
             throw httpError(401, '密码错误');
         }
-
-        const profile = access.mode === 'admin'
-            ? { code: 'admin', label: '超级管理员', role: 'admin' }
-            : { code: access.owner.code, label: access.owner.label, role: 'owner' };
-
-        return json({
-            ok: true,
-            owner: profile
-        }, 200, request, env);
+        return json({ ok: true, user: { id: user.id, username: user.username, role: user.role } }, 200, request, env);
     }
 
     if (action === 'nextUrl') {
