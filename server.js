@@ -500,6 +500,11 @@ function sanitizeLinks(links) {
   console.log('[sanitizeLinks] Input type:', typeof links);
   console.log('[sanitizeLinks] Input value:', JSON.stringify(links).slice(0, 200));
 
+  // 检查是否是无效的对象字符串表示
+  if (typeof links === 'string' && links === '[object Object]') {
+    throw httpError(400, '链接数据格式错误：前端发送了无效的对象表示');
+  }
+
   // 如果是字符串，按换行符分割
   if (typeof links === 'string') {
     console.log('[sanitizeLinks] Converting string to array...');
