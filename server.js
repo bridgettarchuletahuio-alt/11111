@@ -8,6 +8,7 @@ const { promisify } = require('util');
 const scrypt = promisify(crypto.scrypt);
 
 const { runDataMigration } = require('./migration');
+const { runCloudflareD1Migration } = require('./scripts/migrate-from-cloudflare');
 
 // ─── Database ────────────────────────────────────────────────────────────────
 
@@ -124,6 +125,20 @@ app.post('/api', async (req, res) => {
   } catch (err) {
     const status = err.status || 500;
     res.status(status).json({ error: err.message || 'Internal error' });
+  }
+});
+
+// ─── Cloudflare D1 migration endpoint ────────────────────────────────────────
+
+app.post('/api/migrate', async (req, res) => {
+  try {
+    console.log('[/api/migrate] Starting Cloudflare D1 → PostgreSQL migration…');
+    const result = await runCloudflareD1Migration({ pgPool: pool });
+    console.log('[/api/migrate] Migration finished successfully.');
+    res.json(result);
+  } catch (err) {
+    console.error('[/api/migrate] Migration failed:', err.message);
+    res.status(500).json({ success: false, error: err.message || 'Migration failed' });
   }
 });
 

@@ -26,22 +26,25 @@ const https = require('https');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const DATABASE_URL        = process.env.DATABASE_URL;
 const CF_API_TOKEN        = process.env.CLOUDFLARE_API_TOKEN  || 'cfat_nMspXVNb865PeoqRNQw9bBduNsiLiFNB05dQjO3U91a51a31';
 const CF_ACCOUNT_ID       = process.env.CLOUDFLARE_ACCOUNT_ID || '8e9de460cc8eaa1f6315477443a56bff';
 const CF_D1_DATABASE_NAME = process.env.CF_D1_DATABASE_NAME   || 'chamberwu';
 
-if (!DATABASE_URL) {
-  console.error('[migrate] ERROR: DATABASE_URL environment variable is not set.');
-  process.exit(1);
+// ─── PostgreSQL pool (lazy — only created when running as CLI) ────────────────
+
+function createPool() {
+  const DATABASE_URL = process.env.DATABASE_URL;
+  if (!DATABASE_URL) {
+    throw new Error('DATABASE_URL environment variable is not set.');
+  }
+  return new Pool({
+    connectionString: DATABASE_URL,
+    ssl: DATABASE_URL.includes('railway') ? { rejectUnauthorized: false } : false,
+  });
 }
 
-// ─── PostgreSQL pool ──────────────────────────────────────────────────────────
-
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  ssl: DATABASE_URL.includes('railway') ? { rejectUnauthorized: false } : false,
-});
+// Module-level pool reference used only in CLI mode (set in the CLI block below)
+let pool = null;
 
 // ─── Cloudflare D1 HTTP helper ────────────────────────────────────────────────
 
@@ -375,48 +378,34 @@ async function ensureTables(client) {
   `);
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
+// ─── Core migration function (reusable) ──────────────────────────────────────
 
-async function main() {
-  console.log('╔══════════════════════════════════════════════════════════╗');
-  console.log('║        Cloudflare D1 → PostgreSQL Migration Tool        ║');
-  console.log('╚══════════════════════════════════════════════════════════╝');
-  console.log('');
-  console.log(`[migrate] D1 database  : ${CF_D1_DATABASE_NAME}`);
-  console.log(`[migrate] CF account   : ${CF_ACCOUNT_ID}`);
-  console.log(`[migrate] PostgreSQL   : ${DATABASE_URL.replace(/:\/\/[^@]+@/, '://<credentials>@')}`);
-  console.log('');
+/**
+ * Run the full Cloudflare D1 → PostgreSQL migration.
+ *
+ * @param {object} [opts]
+ * @param {import('pg').Pool} [opts.pgPool]  – existing pg Pool to reuse (skips pool.end())
+ * @returns {Promise<{ success: boolean, users: object, linkSets: object, clickLogs: object }>}
+ */
+async function runCloudflareD1Migration(opts = {}) {
+  const externalPool = opts.pgPool || null;
+  // Use the caller-supplied pool, or create a fresh one for CLI usage
+  const localPool    = externalPool || createPool();
+  const ownPool      = !externalPool;
 
-  // 1. Resolve D1 database UUID
   console.log('[migrate] Resolving D1 database UUID…');
-  let databaseId;
-  try {
-    databaseId = await resolveD1DatabaseId();
-    console.log(`[migrate] D1 database UUID: ${databaseId}`);
-  } catch (err) {
-    console.error(`[migrate] ERROR: ${err.message}`);
-    process.exit(1);
-  }
+  const databaseId = await resolveD1DatabaseId();
+  console.log(`[migrate] D1 database UUID: ${databaseId}`);
 
-  // 2. Fetch all rows from D1
-  console.log('');
   console.log('[migrate] Fetching data from Cloudflare D1…');
-  let kvRows, linkSetRows, clickLogRows;
-  try {
-    [kvRows, linkSetRows, clickLogRows] = await Promise.all([
-      fetchAllRows(databaseId, '_cf_KV'),
-      fetchAllRows(databaseId, 'link_sets'),
-      fetchAllRows(databaseId, 'click_logs'),
-    ]);
-  } catch (err) {
-    console.error(`[migrate] ERROR fetching D1 data: ${err.message}`);
-    process.exit(1);
-  }
+  const [kvRows, linkSetRows, clickLogRows] = await Promise.all([
+    fetchAllRows(databaseId, '_cf_KV'),
+    fetchAllRows(databaseId, 'link_sets'),
+    fetchAllRows(databaseId, 'click_logs'),
+  ]);
 
-  // 3. Connect to PostgreSQL and run migrations
-  console.log('');
   console.log('[migrate] Connecting to PostgreSQL…');
-  const client = await pool.connect();
+  const client = await localPool.connect();
 
   try {
     console.log('[migrate] Ensuring PostgreSQL tables exist…');
@@ -424,8 +413,6 @@ async function main() {
 
     await client.query('BEGIN');
 
-    // ── Users (from _cf_KV) ──────────────────────────────────────────────────
-    console.log('');
     console.log('[migrate] Migrating users from _cf_KV…');
     const userStats = await migrateUsers(client, kvRows);
     console.log(
@@ -433,8 +420,6 @@ async function main() {
       `skipped: ${userStats.skipped}, errors: ${userStats.errors}`
     );
 
-    // ── link_sets ────────────────────────────────────────────────────────────
-    console.log('');
     console.log('[migrate] Migrating link_sets…');
     const linkSetStats = await migrateLinkSets(client, linkSetRows);
     console.log(
@@ -442,8 +427,6 @@ async function main() {
       `skipped: ${linkSetStats.skipped}, errors: ${linkSetStats.errors}`
     );
 
-    // ── click_logs ───────────────────────────────────────────────────────────
-    console.log('');
     console.log('[migrate] Migrating click_logs…');
     const clickLogStats = await migrateClickLogs(client, clickLogRows);
     console.log(
@@ -453,36 +436,60 @@ async function main() {
 
     await client.query('COMMIT');
 
-    // ── Summary ──────────────────────────────────────────────────────────────
+    const totalErrors = userStats.errors + linkSetStats.errors + clickLogStats.errors;
+    if (totalErrors > 0) {
+      console.warn(`[migrate] ⚠  Migration completed with ${totalErrors} error(s).`);
+    } else {
+      console.log('[migrate] ✓  Migration completed successfully.');
+    }
+
+    return {
+      success:   true,
+      users:     userStats,
+      linkSets:  linkSetStats,
+      clickLogs: clickLogStats,
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(`[migrate] FATAL: Transaction rolled back. ${err.message}`);
+    throw err;
+  } finally {
+    client.release();
+    // Only close the pool when we created it ourselves (CLI mode)
+    if (ownPool) {
+      await localPool.end();
+    }
+  }
+}
+
+module.exports = { runCloudflareD1Migration };
+
+// ─── CLI entry-point ──────────────────────────────────────────────────────────
+
+// Run automatically only when executed directly (not when require()'d)
+if (require.main === module) {
+  console.log('╔══════════════════════════════════════════════════════════╗');
+  console.log('║        Cloudflare D1 → PostgreSQL Migration Tool        ║');
+  console.log('╚══════════════════════════════════════════════════════════╝');
+  console.log('');
+  console.log(`[migrate] D1 database  : ${CF_D1_DATABASE_NAME}`);
+  console.log(`[migrate] CF account   : ${CF_ACCOUNT_ID}`);
+  console.log(`[migrate] PostgreSQL   : ${(process.env.DATABASE_URL || '').replace(/:\\/\\/[^@]+@/, '://<credentials>@')}`);
+  console.log('');
+
+  runCloudflareD1Migration().then((stats) => {
     console.log('');
     console.log('┌──────────────────────────────────────────────────────────┐');
     console.log('│                    Migration Summary                     │');
     console.log('├──────────────────┬──────────┬──────────┬────────────────┤');
     console.log('│ Table            │ Inserted │ Skipped  │ Errors         │');
     console.log('├──────────────────┼──────────┼──────────┼────────────────┤');
-    console.log(`│ users (_cf_KV)   │ ${String(userStats.inserted).padEnd(8)} │ ${String(userStats.skipped).padEnd(8)} │ ${String(userStats.errors).padEnd(14)} │`);
-    console.log(`│ link_sets        │ ${String(linkSetStats.inserted).padEnd(8)} │ ${String(linkSetStats.skipped).padEnd(8)} │ ${String(linkSetStats.errors).padEnd(14)} │`);
-    console.log(`│ click_logs       │ ${String(clickLogStats.inserted).padEnd(8)} │ ${String(clickLogStats.skipped).padEnd(8)} │ ${String(clickLogStats.errors).padEnd(14)} │`);
+    console.log(`│ users (_cf_KV)   │ ${String(stats.users.inserted).padEnd(8)} │ ${String(stats.users.skipped).padEnd(8)} │ ${String(stats.users.errors).padEnd(14)} │`);
+    console.log(`│ link_sets        │ ${String(stats.linkSets.inserted).padEnd(8)} │ ${String(stats.linkSets.skipped).padEnd(8)} │ ${String(stats.linkSets.errors).padEnd(14)} │`);
+    console.log(`│ click_logs       │ ${String(stats.clickLogs.inserted).padEnd(8)} │ ${String(stats.clickLogs.skipped).padEnd(8)} │ ${String(stats.clickLogs.errors).padEnd(14)} │`);
     console.log('└──────────────────┴──────────┴──────────┴────────────────┘');
-
-    const totalErrors = userStats.errors + linkSetStats.errors + clickLogStats.errors;
-    if (totalErrors > 0) {
-      console.warn(`\n[migrate] ⚠  Migration completed with ${totalErrors} error(s). Check the log above.`);
-    } else {
-      console.log('\n[migrate] ✓  Migration completed successfully.');
-    }
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error(`[migrate] FATAL: Transaction rolled back. ${err.message}`);
-    console.error(err.stack);
+  }).catch((err) => {
+    console.error('[migrate] Unhandled error:', err);
     process.exit(1);
-  } finally {
-    client.release();
-    await pool.end();
-  }
+  });
 }
-
-main().catch((err) => {
-  console.error('[migrate] Unhandled error:', err);
-  process.exit(1);
-});
