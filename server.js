@@ -7,6 +7,8 @@ const { promisify } = require('util');
 
 const scrypt = promisify(crypto.scrypt);
 
+const { runDataMigration } = require('./migration');
+
 // ─── Database ────────────────────────────────────────────────────────────────
 
 const pool = new Pool({
@@ -545,6 +547,8 @@ async function runMigrations() {
 const PORT = process.env.PORT || 3000;
 
 runMigrations().then(() => {
+  return runDataMigration(pool);
+}).then(() => {
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
