@@ -363,13 +363,8 @@
             <textarea id="mergeInput" rows="8" placeholder="输入链接，每行一个，例如：
 https://wa.me/123?text=START
 https://wa.me/456?text=START
-https://wa.me/789?text=START"></textarea>
-            <div style="margin:10px 0;display:flex;align-items:center;gap:8px;">
-                <label>分配额度：</label>
-                <button type="button" id="minusQuotaMerge" style="width:28px;">-</button>
-                <input type="number" id="quotaMerge" value="1111111" min="1" style="width:100px;text-align:center;">
-                <button type="button" id="plusQuotaMerge" style="width:28px;">+</button>
-            </div>
+https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
+            <div id="mergeLinkRows" style="margin:10px 0;"></div>
             <button onclick="mergeLinks()">生成合并链接</button>
             <div id="mergeOutput"></div>
 
@@ -790,10 +785,9 @@ https://wa.me/789?text=START"></textarea>
                     item.quota = Math.max(1, parseInt(val, 10) || 1);
                     editableSublinks[idx] = item;
                 }
-                // 合并和分配界面额度按钮逻辑
+                // 分配界面额度按钮逻辑
                 function setupQuotaButtons() {
                     [
-                        {minus:'minusQuotaMerge',input:'quotaMerge',plus:'plusQuotaMerge'},
                         {minus:'minusQuotaDistribute',input:'quotaDistribute',plus:'plusQuotaDistribute'}
                     ].forEach(cfg => {
                         let minus = document.getElementById(cfg.minus);
@@ -946,27 +940,88 @@ https://wa.me/789?text=START"></textarea>
             });
         }
 
+        // 渲染每个链接的分配行
+        function renderMergeLinkRows() {
+            const input = document.getElementById('mergeInput').value;
+            const container = document.getElementById('mergeLinkRows');
+            const lines = input.split('\n').map(l => l.trim()).filter(l => l.startsWith('http'));
+
+            if (lines.length === 0) {
+                container.innerHTML = '';
+                return;
+            }
+
+            // 保留已有行的 quota 和 name 值
+            const existing = {};
+            container.querySelectorAll('.merge-link-row').forEach(row => {
+                const url = row.dataset.url;
+                const quota = parseInt(row.querySelector('.merge-quota-input').value, 10) || 1;
+                const name = row.querySelector('.merge-name-input').value;
+                existing[url] = { quota, name };
+            });
+
+            container.innerHTML = lines.map((url, idx) => {
+                const prev = existing[url] || {};
+                const quota = prev.quota || 1;
+                const name = prev.name || '';
+                const safeUrl = url.replace(/"/g, '&quot;');
+                return `
+                <div class="merge-link-row" data-url="${safeUrl}" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid #ececec;border-radius:5px;padding:8px;margin-bottom:6px;background:#fff;">
+                    <span style="font-family:monospace;font-size:12px;color:#0d4f9c;flex:1;min-width:120px;word-break:break-all;">${url}</span>
+                    <button type="button" class="mini-btn" style="margin-top:0;padding:6px 10px;" onclick="changeMergeRowQuota(this,-1)">-</button>
+                    <input type="number" class="merge-quota-input" value="${quota}" min="1" style="width:60px;text-align:center;padding:6px;border:1px solid #ddd;border-radius:4px;font-size:14px;">
+                    <button type="button" class="mini-btn" style="margin-top:0;padding:6px 10px;" onclick="changeMergeRowQuota(this,1)">+</button>
+                    <input type="text" class="merge-name-input" value="${name}" placeholder="名字（可选）" maxlength="120" style="width:130px;padding:6px;border:1px solid #ddd;border-radius:4px;font-size:13px;">
+                </div>`;
+            }).join('');
+        }
+
+        function changeMergeRowQuota(btn, delta) {
+            const row = btn.closest('.merge-link-row');
+            const input = row.querySelector('.merge-quota-input');
+            input.value = Math.max(1, (parseInt(input.value, 10) || 1) + delta);
+        }
+
         async function mergeLinks() {
             try {
                 const input = document.getElementById('mergeInput').value.trim();
-                const name = '';
                 if (!input) {
                     alert('请输入至少一个链接！');
                     return;
                 }
-                
-                const links = input.split('\n')
-                    .map(link => link.trim())
-                    .filter(link => link && link.startsWith('http'));
-                
-                if (links.length === 0) {
+
+                const rawLines = input.split('\n').map(l => l.trim()).filter(l => l.startsWith('http'));
+                if (rawLines.length === 0) {
                     alert('未找到有效的链接！请确保每个链接都以http://或https://开头');
                     return;
                 }
 
+                // 收集每行的 quota 和 name
+                const container = document.getElementById('mergeLinkRows');
+                const rows = container.querySelectorAll('.merge-link-row');
+
+                // 构建最终链接数组（按 quota 重复）
+                const links = [];
+                let globalName = '';
+                rows.forEach((row, idx) => {
+                    const url = rawLines[idx];
+                    if (!url) return;
+                    const quota = Math.max(1, parseInt(row.querySelector('.merge-quota-input').value, 10) || 1);
+                    const name = row.querySelector('.merge-name-input').value.trim();
+                    if (name && !globalName) globalName = name;
+                    for (let i = 0; i < quota; i++) {
+                        links.push(url);
+                    }
+                });
+
+                if (links.length === 0) {
+                    alert('未找到有效的链接！');
+                    return;
+                }
+
                 // 通过在线表格接口创建共享ID，确保不同设备都可访问。
-                const id = await createOnlineSet(links, name);
-                
+                const id = await createOnlineSet(links, globalName);
+
                 // 生成完整的短链接URL
                 const mergedUrl = buildShortUrl(id);
 
@@ -974,7 +1029,7 @@ https://wa.me/789?text=START"></textarea>
                 const outputDiv = document.getElementById('mergeOutput');
                 outputDiv.innerHTML = `
                     <div class="link-box">
-                        <label>✅ 成功生成短链接！(${links.length} 个)</label>
+                        <label>✅ 成功生成短链接！(${links.length} 个分配槽，共 ${rawLines.length} 个链接)</label>
                         <input type="text" value="${mergedUrl}" readonly style="margin-top: 10px; font-size: 14px;">
                         <button class="copy-btn" onclick="copyToClipboard(this)">📋 复制链接</button>
                         <button onclick="setStatsId('${id}')">📊 查看该链接统计</button>
