@@ -497,8 +497,13 @@ function sanitizeId(value) {
 }
 
 function sanitizeLinks(links) {
+  // 如果是字符串，按换行符分割
+  if (typeof links === 'string') {
+    links = links.split('\n').map(line => line.trim()).filter(Boolean);
+  }
+
   if (!Array.isArray(links)) {
-    throw httpError(400, 'links 必须是数组');
+    throw httpError(400, 'links 必须是数组或字符串');
   }
   const clean = links
     .map(item => String(item || '').trim())
