@@ -474,7 +474,8 @@ if (require.main === module) {
   console.log('');
   console.log(`[migrate] D1 database  : ${CF_D1_DATABASE_NAME}`);
   console.log(`[migrate] CF account   : ${CF_ACCOUNT_ID}`);
-  console.log(`[migrate] PostgreSQL   : ${(process.env.DATABASE_URL || '').replace(/:\\/\\/[^@]+@/, '://<credentials>@')}`);
+  const maskedUrl = (process.env.DATABASE_URL || '').replace(/([^:]+):([^@]+)@/, '<credentials>@');
+  console.log(`[migrate] PostgreSQL   : ${maskedUrl}`);
   console.log('');
 
   runCloudflareD1Migration().then((stats) => {
