@@ -4,7 +4,8 @@
   "description": "链接分配器 Railway 后端",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "migrate:cloudflare": "node scripts/migrate-from-cloudflare.js"
   },
   "dependencies": {
     "express": "^4.22.1",
