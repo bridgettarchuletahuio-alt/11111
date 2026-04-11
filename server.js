@@ -497,9 +497,14 @@ function sanitizeId(value) {
 }
 
 function sanitizeLinks(links) {
+  console.log('[sanitizeLinks] Input type:', typeof links);
+  console.log('[sanitizeLinks] Input value:', JSON.stringify(links).slice(0, 200));
+
   // 如果是字符串，按换行符分割
   if (typeof links === 'string') {
+    console.log('[sanitizeLinks] Converting string to array...');
     links = links.split('\n').map(line => line.trim()).filter(Boolean);
+    console.log('[sanitizeLinks] After split:', links.length, 'items');
   }
 
   if (!Array.isArray(links)) {
