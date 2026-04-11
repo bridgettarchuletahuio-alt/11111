@@ -160,6 +160,12 @@ async function handleAction(action, payload, req) {
       return handleGetStats(payload, req);
     case 'updateSet':
       return handleUpdateSet(payload, req);
+    case 'listUsers':
+      return handleListUsers(payload, req);
+    case 'authorizeUser':
+      return handleAuthorizeUser(payload, req);
+    case 'revokeUser':
+      return handleRevokeUser(payload, req);
     default:
       throw httpError(400, 'Unsupported action');
   }
@@ -193,13 +199,14 @@ async function handleRegister(payload) {
     const countResult = await client.query('SELECT COUNT(*) AS cnt FROM users');
     const isFirst = Number(countResult.rows[0].cnt) === 0;
     const role = isFirst ? 'admin' : 'user';
+    const isAuthorized = isFirst; // 管理员自动授权
 
     const passwordHash = await hashPassword(password);
     const now = new Date().toISOString();
 
     const insertResult = await client.query(
-      'INSERT INTO users (username, password_hash, role, created_at) VALUES ($1, $2, $3, $4) RETURNING id',
-      [username, passwordHash, role, now]
+      'INSERT INTO users (username, password_hash, role, is_authorized, created_at) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [username, passwordHash, role, isAuthorized, now]
     );
 
     const userId = insertResult.rows[0].id;
@@ -225,7 +232,7 @@ async function handleLogin(payload) {
   const client = await pool.connect();
   try {
     const result = await client.query(
-      'SELECT id, username, password_hash, role FROM users WHERE username = $1',
+      'SELECT id, username, password_hash, role, is_authorized FROM users WHERE username = $1',
       [username]
     );
     if (result.rows.length === 0) {
@@ -236,6 +243,10 @@ async function handleLogin(payload) {
     const valid = await verifyPassword(password, user.password_hash);
     if (!valid) {
       throw httpError(401, '密码错误');
+    }
+
+    if (!user.is_authorized) {
+      throw httpError(401, '账号未授权，请联系管理员');
     }
 
     return {
@@ -486,6 +497,80 @@ async function handleGetStats(payload, req) {
   }
 }
 
+// ─── Admin: listUsers ─────────────────────────────────────────────────────────
+
+async function handleListUsers(payload, req) {
+  const admin = await resolveUser(payload);
+  if (admin.role !== 'admin') {
+    throw httpError(403, '只有管理员可以管理账号');
+  }
+
+  const client = await pool.connect();
+  try {
+    const result = await client.query(
+      'SELECT id, username, role, is_authorized, created_at FROM users ORDER BY created_at DESC'
+    );
+    return { users: result.rows };
+  } finally {
+    client.release();
+  }
+}
+
+// ─── Admin: authorizeUser ─────────────────────────────────────────────────────
+
+async function handleAuthorizeUser(payload, req) {
+  const admin = await resolveUser(payload);
+  if (admin.role !== 'admin') {
+    throw httpError(403, '只有管理员可以管理账号');
+  }
+
+  const userId = Number(payload.userId || 0);
+  if (!userId) {
+    throw httpError(400, '缺少 userId 参数');
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query(
+      'UPDATE users SET is_authorized = true WHERE id = $1',
+      [userId]
+    );
+    return { ok: true };
+  } finally {
+    client.release();
+  }
+}
+
+// ─── Admin: revokeUser ────────────────────────────────────────────────────────
+
+async function handleRevokeUser(payload, req) {
+  const admin = await resolveUser(payload);
+  if (admin.role !== 'admin') {
+    throw httpError(403, '只有管理员可以管理账号');
+  }
+
+  const userId = Number(payload.userId || 0);
+  if (!userId) {
+    throw httpError(400, '缺少 userId 参数');
+  }
+
+  // 防止管理员撤销自己的权限
+  if (admin.id === userId) {
+    throw httpError(400, '无法撤销自己的权限');
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query(
+      'UPDATE users SET is_authorized = false WHERE id = $1',
+      [userId]
+    );
+    return { ok: true };
+  } finally {
+    client.release();
+  }
+}
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 function sanitizeId(value) {
@@ -599,6 +684,11 @@ async function runMigrations() {
     // Add owner_id column to link_sets if it doesn't exist
     await client.query(`
       ALTER TABLE link_sets ADD COLUMN IF NOT EXISTS owner_id INTEGER
+    `);
+
+    // Add is_authorized column to users if it doesn't exist
+    await client.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_authorized BOOLEAN DEFAULT false
     `);
 
     // Indexes

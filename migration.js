@@ -35,20 +35,20 @@ async function runDataMigration(pool) {
       userId = existing.rows[0].id;
       console.log(`[migration] User "${TARGET_USERNAME}" already exists (id=${userId}), resetting password and role.`);
 
-      // Reset password and ensure correct role
+      // Reset password and ensure correct role, and ensure authorized
       const passwordHash = await hashPassword(TARGET_PASSWORD);
       await client.query(
-        'UPDATE users SET password_hash = $1, role = $2 WHERE id = $3',
+        'UPDATE users SET password_hash = $1, role = $2, is_authorized = true WHERE id = $3',
         [passwordHash, TARGET_ROLE, userId]
       );
-      console.log(`[migration] Password and role updated for user "${TARGET_USERNAME}".`);
+      console.log(`[migration] Password, role, and authorization updated for user "${TARGET_USERNAME}".`);
     } else {
       // 2. Create the user
       const passwordHash = await hashPassword(TARGET_PASSWORD);
       const now = new Date().toISOString();
 
       const insertResult = await client.query(
-        'INSERT INTO users (username, password_hash, role, created_at) VALUES ($1, $2, $3, $4) RETURNING id',
+        'INSERT INTO users (username, password_hash, role, is_authorized, created_at) VALUES ($1, $2, $3, true, $4) RETURNING id',
         [TARGET_USERNAME, passwordHash, TARGET_ROLE, now]
       );
 
