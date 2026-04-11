@@ -196,6 +196,24 @@ function clampLimit(value) {
 }
 
 async function handleActionApi(request, env, executionCtx) {
+        if (action === 'updateSet') {
+            // 参数：id, links
+            const id = sanitizeId(payload.id);
+            const links = Array.isArray(payload.links) ? payload.links : [];
+            if (!id || links.length === 0) {
+                throw httpError(400, '缺少id或links');
+            }
+            // 权限校验
+            const access = await ensureAuthorizedAccess(request, env, new URL(request.url), payload);
+            ensureSetAccess(id, access);
+            // 更新数据库
+            const now = new Date().toISOString();
+            await env.DB.prepare('UPDATE link_sets SET links_json = ?, updated_at = ? WHERE id = ?')
+                .bind(JSON.stringify(links), now, id).run();
+            setLinksMemoryCache(env, id, links);
+            await setLinksKvCache(env, id, links);
+            return json({ ok: true }, 200, request, env);
+        }
     const payload = await readJson(request);
     const action = String(payload.action || '').trim();
 

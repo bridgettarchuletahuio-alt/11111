@@ -423,7 +423,7 @@ https://wa.me/789?text=START"></textarea>
     <script>
         const MIGRATION_CONFIG = {
             useWorker: true,
-            workerBaseUrl: 'https://bx-group.uk',
+            workerBaseUrl: 'https://11111-production-d2b4.up.railway.app',
             legacyScriptUrl: 'https://script.google.com/macros/s/AKfycbwMYWgW6oBK1VFGhQVfdMiaE-wJU8MSGNLqvwgqvTUPsQJyZswdC_LxKTmqrv8l7IVM/exec',
             legacyPublicBaseUrl: 'https://bridgettarchuletahuio-alt.github.io/11111/'
         };
@@ -759,27 +759,29 @@ https://wa.me/789?text=START"></textarea>
                     <div class="sublink-url">${item.url}</div>
                     <div style="display:flex;align-items:center;gap:4px;">
                         <label>额度</label>
-                        <button class="mini-btn" onclick="changeSublinkQuota(${idx},-1)">-</button>
-                        <input type="number" value="${item.quota}" min="1" style="width:70px;text-align:center;" onchange="setSublinkQuota(${idx},this.value)">
-                        <button class="mini-btn" onclick="changeSublinkQuota(${idx},1)">+</button>
+                        <button class="mini-btn" onclick="window.changeSublinkQuota(${idx},-1)">-</button>
+                        <input type="number" value="${item.quota}" min="1" style="width:70px;text-align:center;" onchange="window.setSublinkQuota(${idx},this.value)">
+                        <button class="mini-btn" onclick="window.changeSublinkQuota(${idx},1)">+</button>
                     </div>
                     <button class="mini-btn" onclick="editSublink(${idx})">编辑</button>
                     <button class="mini-btn danger-btn" onclick="removeSublink(${idx})">删除</button>
                 </div>
                 `;
             }).join('');
-                function changeSublinkQuota(idx, delta) {
+                window.changeSublinkQuota = function(idx, delta) {
                     if (!editableSublinks[idx]) return;
                     let item = editableSublinks[idx];
                     if (typeof item === 'string') item = { url: item, quota: 1 };
+                    else item = Object.assign({}, item); // 避免对象引用问题
                     item.quota = Math.max(1, (parseInt(item.quota, 10) || 1) + delta);
                     editableSublinks[idx] = item;
                     renderSublinkList();
                 }
-                function setSublinkQuota(idx, val) {
+                window.setSublinkQuota = function(idx, val) {
                     if (!editableSublinks[idx]) return;
                     let item = editableSublinks[idx];
                     if (typeof item === 'string') item = { url: item, quota: 1 };
+                    else item = Object.assign({}, item);
                     item.quota = Math.max(1, parseInt(val, 10) || 1);
                     editableSublinks[idx] = item;
                 }
@@ -866,16 +868,25 @@ https://wa.me/789?text=START"></textarea>
                 return;
             }
             try {
-                // 直接保存对子链接的编辑，不生成新ID
+                // 实时写入数据库
                 const item = historySetMap.get(activeHistorySetId);
                 if (!item) {
                     alert('未找到该历史任务，请先刷新历史。');
                     return;
                 }
-                item.links = editableSublinks.slice();
-                // 可选：可在本地存储或远端API同步
-                alert('子链接修改已保存（仅本地，历史ID未变动）');
+                // 只保留 url 和 quota 字段
+                const links = editableSublinks.map(l => ({ url: l.url, quota: l.quota }));
+                // 用统一的 apiPost 方法，自动带密码
+                const resp = await apiPost({
+                    action: 'updateSet',
+                    id: activeHistorySetId,
+                    links
+                });
+                if (!resp || resp.error) throw new Error(resp && resp.error ? resp.error : '保存失败');
+                alert('子链接修改已保存（已同步云端，历史ID未变动）');
                 renderSublinkList();
+                await fetchHistory();
+                openSublinkEditor(activeHistorySetId);
             } catch (error) {
                 alert('保存修改失败：' + error.message);
             }
