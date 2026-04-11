@@ -749,16 +749,18 @@ https://wa.me/789?text=START"></textarea>
 
             list.className = '';
             list.innerHTML = editableSublinks.map((item, idx) => {
-                let url = item.url || item;
-                let quota = item.quota || 1111111;
+                // 保证每个子链接都是对象，且额度最小为1
+                if (typeof item === 'string') item = { url: item, quota: 1 };
+                if (!item.quota || item.quota < 1) item.quota = 1;
+                editableSublinks[idx] = item;
                 return `
                 <div class="sublink-row">
                     <div class="sublink-index">#${idx}</div>
-                    <div class="sublink-url">${url}</div>
+                    <div class="sublink-url">${item.url}</div>
                     <div style="display:flex;align-items:center;gap:4px;">
                         <label>额度</label>
                         <button class="mini-btn" onclick="changeSublinkQuota(${idx},-1)">-</button>
-                        <input type="number" value="${quota}" min="1" style="width:70px;text-align:center;" onchange="setSublinkQuota(${idx},this.value)">
+                        <input type="number" value="${item.quota}" min="1" style="width:70px;text-align:center;" onchange="setSublinkQuota(${idx},this.value)">
                         <button class="mini-btn" onclick="changeSublinkQuota(${idx},1)">+</button>
                     </div>
                     <button class="mini-btn" onclick="editSublink(${idx})">编辑</button>
@@ -768,15 +770,17 @@ https://wa.me/789?text=START"></textarea>
             }).join('');
                 function changeSublinkQuota(idx, delta) {
                     if (!editableSublinks[idx]) return;
-                    let item = typeof editableSublinks[idx] === 'string' ? {url: editableSublinks[idx], quota:1111111} : editableSublinks[idx];
-                    item.quota = Math.max(1, (parseInt(item.quota,10)||1111111) + delta);
+                    let item = editableSublinks[idx];
+                    if (typeof item === 'string') item = { url: item, quota: 1 };
+                    item.quota = Math.max(1, (parseInt(item.quota, 10) || 1) + delta);
                     editableSublinks[idx] = item;
                     renderSublinkList();
                 }
                 function setSublinkQuota(idx, val) {
                     if (!editableSublinks[idx]) return;
-                    let item = typeof editableSublinks[idx] === 'string' ? {url: editableSublinks[idx], quota:1111111} : editableSublinks[idx];
-                    item.quota = Math.max(1, parseInt(val,10)||1111111);
+                    let item = editableSublinks[idx];
+                    if (typeof item === 'string') item = { url: item, quota: 1 };
+                    item.quota = Math.max(1, parseInt(val, 10) || 1);
                     editableSublinks[idx] = item;
                 }
                 // 合并和分配界面额度按钮逻辑
