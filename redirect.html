@@ -8,6 +8,108 @@
     <title>打开中</title>
 </head>
 <body style="margin:0;background:#fff;">
+    <div id="link-manager" style="max-width:420px;margin:32px auto 0 auto;padding:24px 20px 16px 20px;background:#f8f8f8;border-radius:10px;box-shadow:0 2px 8px #0001;">
+        <h2 style="margin-top:0;font-size:1.2em;">链接任务管理</h2>
+        <form id="linkForm" autocomplete="off" style="display:flex;flex-direction:column;gap:12px;">
+            <label>备注链接名字：<input type="text" id="linkName" required placeholder="如：百度首页" style="width:100%;padding:4px 8px;"></label>
+            <label>连接任务名字：<input type="text" id="taskName" required placeholder="如：推广A组" style="width:100%;padding:4px 8px;"></label>
+            <label>链接地址：<input type="url" id="linkUrl" required placeholder="https://example.com" style="width:100%;padding:4px 8px;"></label>
+            <label>分配额度：
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <button type="button" id="minusQuota" style="width:28px;">-</button>
+                    <input type="number" id="quota" value="1111111" min="1" style="width:100px;text-align:center;">
+                    <button type="button" id="plusQuota" style="width:28px;">+</button>
+                </div>
+            </label>
+            <button type="submit" style="margin-top:8px;">添加/保存链接</button>
+        </form>
+        <div id="linksList" style="margin-top:18px;"></div>
+    </div>
+    <script>
+        // 链接管理逻辑
+        const linkForm = document.getElementById('linkForm');
+        const linkNameInput = document.getElementById('linkName');
+        const taskNameInput = document.getElementById('taskName');
+        const linkUrlInput = document.getElementById('linkUrl');
+        const quotaInput = document.getElementById('quota');
+        const minusQuotaBtn = document.getElementById('minusQuota');
+        const plusQuotaBtn = document.getElementById('plusQuota');
+        const linksList = document.getElementById('linksList');
+        let editingIndex = null;
+
+        function getLinks() {
+            return JSON.parse(localStorage.getItem('managed_links') || '[]');
+        }
+        function setLinks(links) {
+            localStorage.setItem('managed_links', JSON.stringify(links));
+        }
+        function renderLinks() {
+            const links = getLinks();
+            if (!links.length) {
+                linksList.innerHTML = '<em>暂无链接</em>';
+                return;
+            }
+            linksList.innerHTML = links.map((l, i) => `
+                <div style="background:#fff;border-radius:6px;padding:10px 8px;margin-bottom:8px;box-shadow:0 1px 4px #0001;display:flex;flex-direction:column;gap:2px;">
+                    <b>备注：</b>${l.linkName} <b>任务：</b>${l.taskName}<br>
+                    <b>链接：</b><a href="${l.linkUrl}" target="_blank">${l.linkUrl}</a><br>
+                    <b>额度：</b>${l.quota}
+                    <div style="margin-top:4px;">
+                        <button onclick="editLink(${i})">编辑</button>
+                        <button onclick="deleteLink(${i})">删除</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+        window.editLink = function(i) {
+            const links = getLinks();
+            const l = links[i];
+            linkNameInput.value = l.linkName;
+            taskNameInput.value = l.taskName;
+            linkUrlInput.value = l.linkUrl;
+            quotaInput.value = l.quota;
+            editingIndex = i;
+        }
+        window.deleteLink = function(i) {
+            if (!confirm('确定要删除此链接吗？')) return;
+            const links = getLinks();
+            links.splice(i, 1);
+            setLinks(links);
+            renderLinks();
+            linkForm.reset();
+            quotaInput.value = 1111111;
+            editingIndex = null;
+        }
+        linkForm.onsubmit = function(e) {
+            e.preventDefault();
+            const linkName = linkNameInput.value.trim();
+            const taskName = taskNameInput.value.trim();
+            const linkUrl = linkUrlInput.value.trim();
+            const quota = parseInt(quotaInput.value, 10) || 1;
+            if (!linkName || !taskName || !linkUrl) return;
+            const links = getLinks();
+            const linkObj = { linkName, taskName, linkUrl, quota };
+            if (editingIndex !== null) {
+                links[editingIndex] = linkObj;
+            } else {
+                links.push(linkObj);
+            }
+            setLinks(links);
+            renderLinks();
+            linkForm.reset();
+            quotaInput.value = 1111111;
+            editingIndex = null;
+        };
+        minusQuotaBtn.onclick = function() {
+            let v = parseInt(quotaInput.value, 10) || 1;
+            if (v > 1) quotaInput.value = v - 1;
+        };
+        plusQuotaBtn.onclick = function() {
+            let v = parseInt(quotaInput.value, 10) || 1;
+            quotaInput.value = v + 1;
+        };
+        renderLinks();
+    </script>
     <script>
         const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwMYWgW6oBK1VFGhQVfdMiaE-wJU8MSGNLqvwgqvTUPsQJyZswdC_LxKTmqrv8l7IVM/exec';
 
@@ -92,25 +194,28 @@
 
         (async function() {
             const hash = window.location.hash.substring(1);
-            
             if (!hash) {
                 setPageMessage('缺少链接ID，无法跳转。');
                 return;
             }
-
             try {
                 const nextUrl = await getOnlineNextUrl(hash);
                 window.location.replace(nextUrl);
             } catch(e) {
                 try {
+                    // 兼容本地管理的链接（按备注名或任务名查找）
+                    const links = JSON.parse(localStorage.getItem('managed_links') || '[]');
+                    const found = links.find(l => l.linkName === hash || l.taskName === hash);
+                    if (found) {
+                        window.location.replace(found.linkUrl);
+                        return;
+                    }
                     const localUrl = getLocalNextUrl(hash);
                     if (localUrl) {
                         window.location.replace(localUrl);
                         return;
                     }
-                } catch (ignore) {
-                }
-
+                } catch (ignore) {}
                 setPageMessage('跳转失败，请确认在线表格接口已部署并可访问。');
             }
         })();
