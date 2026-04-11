@@ -361,6 +361,12 @@
 https://wa.me/123?text=START
 https://wa.me/456?text=START
 https://wa.me/789?text=START"></textarea>
+            <div style="margin:10px 0;display:flex;align-items:center;gap:8px;">
+                <label>分配额度：</label>
+                <button type="button" id="minusQuotaMerge" style="width:28px;">-</button>
+                <input type="number" id="quotaMerge" value="1111111" min="1" style="width:100px;text-align:center;">
+                <button type="button" id="plusQuotaMerge" style="width:28px;">+</button>
+            </div>
             <button onclick="mergeLinks()">生成合并链接</button>
             <div id="mergeOutput"></div>
 
@@ -378,7 +384,7 @@ https://wa.me/789?text=START"></textarea>
                     <div class="muted-note">历史合并链接不会被修改或删除。你在这里编辑的是副本，保存后会生成一个新的合并链接。</div>
                     <div class="mini-row" style="margin-top: 10px;">
                         <button class="mini-btn" onclick="addSublink()">新增子链接</button>
-                        <button class="mini-btn" onclick="saveSublinkDraft()">生成更新后的新合并链接</button>
+                        <button class="mini-btn" onclick="saveSublinkEdit()">保存修改</button>
                     </div>
                     <div id="sublinkList" class="empty-text">请选择一个历史任务。</div>
                 </div>
@@ -398,6 +404,12 @@ https://wa.me/789?text=START"></textarea>
         <!-- 分配链接模式 -->
         <div id="distribute" class="tab-content">
             <h2>分配链接</h2>
+            <div style="margin:10px 0;display:flex;align-items:center;gap:8px;">
+                <label>分配额度：</label>
+                <button type="button" id="minusQuotaDistribute" style="width:28px;">-</button>
+                <input type="number" id="quotaDistribute" value="1111111" min="1" style="width:100px;text-align:center;">
+                <button type="button" id="plusQuotaDistribute" style="width:28px;">+</button>
+            </div>
             <div class="info-text">
                 📌 粘贴已生成的合并链接，它会按顺序分配每个链接给用户。
             </div>
@@ -736,14 +748,53 @@ https://wa.me/789?text=START"></textarea>
             }
 
             list.className = '';
-            list.innerHTML = editableSublinks.map((url, idx) => `
+            list.innerHTML = editableSublinks.map((item, idx) => {
+                let url = item.url || item;
+                let quota = item.quota || 1111111;
+                return `
                 <div class="sublink-row">
                     <div class="sublink-index">#${idx}</div>
                     <div class="sublink-url">${url}</div>
+                    <div style="display:flex;align-items:center;gap:4px;">
+                        <label>额度</label>
+                        <button class="mini-btn" onclick="changeSublinkQuota(${idx},-1)">-</button>
+                        <input type="number" value="${quota}" min="1" style="width:70px;text-align:center;" onchange="setSublinkQuota(${idx},this.value)">
+                        <button class="mini-btn" onclick="changeSublinkQuota(${idx},1)">+</button>
+                    </div>
                     <button class="mini-btn" onclick="editSublink(${idx})">编辑</button>
                     <button class="mini-btn danger-btn" onclick="removeSublink(${idx})">删除</button>
                 </div>
-            `).join('');
+                `;
+            }).join('');
+                function changeSublinkQuota(idx, delta) {
+                    if (!editableSublinks[idx]) return;
+                    let item = typeof editableSublinks[idx] === 'string' ? {url: editableSublinks[idx], quota:1111111} : editableSublinks[idx];
+                    item.quota = Math.max(1, (parseInt(item.quota,10)||1111111) + delta);
+                    editableSublinks[idx] = item;
+                    renderSublinkList();
+                }
+                function setSublinkQuota(idx, val) {
+                    if (!editableSublinks[idx]) return;
+                    let item = typeof editableSublinks[idx] === 'string' ? {url: editableSublinks[idx], quota:1111111} : editableSublinks[idx];
+                    item.quota = Math.max(1, parseInt(val,10)||1111111);
+                    editableSublinks[idx] = item;
+                }
+                // 合并和分配界面额度按钮逻辑
+                function setupQuotaButtons() {
+                    [
+                        {minus:'minusQuotaMerge',input:'quotaMerge',plus:'plusQuotaMerge'},
+                        {minus:'minusQuotaDistribute',input:'quotaDistribute',plus:'plusQuotaDistribute'}
+                    ].forEach(cfg => {
+                        let minus = document.getElementById(cfg.minus);
+                        let plus = document.getElementById(cfg.plus);
+                        let input = document.getElementById(cfg.input);
+                        if(minus && plus && input) {
+                            minus.onclick = ()=>{input.value=Math.max(1,parseInt(input.value,10)-1||1)};
+                            plus.onclick = ()=>{input.value=parseInt(input.value,10)+1||1};
+                        }
+                    });
+                }
+                window.onload = function() { setupQuotaButtons(); };
         }
 
         function addSublink() {
@@ -801,41 +852,28 @@ https://wa.me/789?text=START"></textarea>
             renderSublinkList();
         }
 
-        async function saveSublinkDraft() {
+        async function saveSublinkEdit() {
             if (!activeHistorySetId) {
                 alert('请先选择一个历史任务。');
                 return;
             }
-
             if (!Array.isArray(editableSublinks) || editableSublinks.length === 0) {
                 alert('请至少保留一个子链接。');
                 return;
             }
-
             try {
-                const nextLinks = editableSublinks.slice();
-                const newId = await createOnlineSet(nextLinks);
-                const newUrl = buildShortUrl(newId);
-
-                const outputDiv = document.getElementById('mergeOutput');
-                outputDiv.innerHTML = `
-                    <div class="link-box">
-                        <label>✅ 已基于历史任务生成新短链接（原ID保持不变）</label>
-                        <input type="text" value="${newUrl}" readonly style="margin-top: 10px; font-size: 14px;">
-                        <button class="copy-btn" onclick="copyToClipboard(this)">📋 复制新链接</button>
-                        <button onclick="setStatsId('${newId}')">📊 查看新链接统计</button>
-                        <div class="success-msg">原历史链接 ${activeHistorySetId} 不会被修改，已生成新链接 ${newId}</div>
-                    </div>
-                `;
-
-                prefillStatsId(newId);
-                await fetchHistory();
-                openSublinkEditor(newId);
-            } catch (error) {
-                if (handleAuthFailure(error)) {
+                // 直接保存对子链接的编辑，不生成新ID
+                const item = historySetMap.get(activeHistorySetId);
+                if (!item) {
+                    alert('未找到该历史任务，请先刷新历史。');
                     return;
                 }
-                alert('生成新合并链接失败：' + error.message);
+                item.links = editableSublinks.slice();
+                // 可选：可在本地存储或远端API同步
+                alert('子链接修改已保存（仅本地，历史ID未变动）');
+                renderSublinkList();
+            } catch (error) {
+                alert('保存修改失败：' + error.message);
             }
         }
 
