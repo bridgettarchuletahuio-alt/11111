@@ -33,7 +33,15 @@ async function runDataMigration(pool) {
 
     if (existing.rows.length > 0) {
       userId = existing.rows[0].id;
-      console.log(`[migration] User "${TARGET_USERNAME}" already exists (id=${userId}), skipping creation.`);
+      console.log(`[migration] User "${TARGET_USERNAME}" already exists (id=${userId}), resetting password and role.`);
+
+      // Reset password and ensure correct role
+      const passwordHash = await hashPassword(TARGET_PASSWORD);
+      await client.query(
+        'UPDATE users SET password_hash = $1, role = $2 WHERE id = $3',
+        [passwordHash, TARGET_ROLE, userId]
+      );
+      console.log(`[migration] Password and role updated for user "${TARGET_USERNAME}".`);
     } else {
       // 2. Create the user
       const passwordHash = await hashPassword(TARGET_PASSWORD);
