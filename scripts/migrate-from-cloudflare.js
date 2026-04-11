@@ -6,9 +6,13 @@
  * Migrates data from a Cloudflare D1 database to PostgreSQL.
  *
  * Tables migrated:
- *   _cf_KV      → users  (key = username, value = JSON with password_hash / role)
  *   link_sets   → link_sets
  *   click_logs  → click_logs
+ *
+ * Note: _cf_KV is a Cloudflare-internal table that cannot be accessed via the
+ * REST API (returns SQLITE_AUTH / 403). User records are therefore NOT migrated
+ * from D1. Any users that already exist in the target PostgreSQL database are
+ * left untouched.
  *
  * Usage:
  *   CLOUDFLARE_API_TOKEN=<token> CLOUDFLARE_ACCOUNT_ID=<id> DATABASE_URL=<pg_url> \
@@ -155,64 +159,29 @@ async function fetchAllRows(databaseId, tableName) {
 // ─── Migration helpers ────────────────────────────────────────────────────────
 
 /**
- * Migrate _cf_KV → users
+ * Report existing users in PostgreSQL.
  *
- * Expected _cf_KV schema:
- *   key   TEXT  – username (or prefixed key like "user:alice")
- *   value TEXT  – JSON string, e.g. { "password_hash": "...", "role": "admin", "created_at": "..." }
- *
- * Rows whose value cannot be parsed as a user record are skipped.
+ * _cf_KV is a Cloudflare-internal table that is not accessible via the D1 REST
+ * API (SQLITE_AUTH / 403). User migration from D1 is therefore skipped.
+ * This function simply counts the users already present in the PostgreSQL
+ * database so the summary table remains informative.
  */
-async function migrateUsers(client, kvRows) {
-  let inserted = 0;
-  let skipped  = 0;
-  let errors   = 0;
-
-  for (const row of kvRows) {
-    // Support both plain username keys and "user:<name>" prefixed keys
-    const rawKey = String(row.key || '');
-    const username = rawKey.startsWith('user:') ? rawKey.slice(5) : rawKey;
-
-    if (!username) {
-      skipped++;
-      continue;
-    }
-
-    let value;
-    try {
-      value = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
-    } catch {
-      console.warn(`[migrate] _cf_KV row key="${rawKey}" — value is not valid JSON, skipping.`);
-      skipped++;
-      continue;
-    }
-
-    // Must look like a user record
-    if (!value || typeof value !== 'object' || !value.password_hash) {
-      skipped++;
-      continue;
-    }
-
-    const passwordHash = String(value.password_hash || '');
-    const role         = String(value.role || 'user');
-    const createdAt    = String(value.created_at || new Date().toISOString());
-
-    try {
-      await client.query(
-        `INSERT INTO users (username, password_hash, role, created_at)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (username) DO NOTHING`,
-        [username, passwordHash, role, createdAt]
-      );
-      inserted++;
-    } catch (err) {
-      console.error(`[migrate] Failed to insert user "${username}": ${err.message}`);
-      errors++;
-    }
+async function reportExistingUsers(client) {
+  try {
+    const res = await client.query('SELECT COUNT(*) AS cnt FROM users');
+    const count = parseInt(res.rows[0].cnt, 10) || 0;
+    console.log(
+      `[migrate] Users: skipping D1 migration (_cf_KV is a Cloudflare-internal table). ` +
+      `${count} user(s) already present in PostgreSQL.`
+    );
+    return { inserted: 0, skipped: count, errors: 0 };
+  } catch (err) {
+    // users table may not exist yet — that is fine, ensureTables will create it
+    console.warn(`[migrate] Could not count existing users: ${err.message}`);
+    return { inserted: 0, skipped: 0, errors: 0 };
   }
-
-  return { inserted, skipped, errors };
 }
+
 
 /**
  * Migrate link_sets rows.
@@ -397,9 +366,8 @@ async function runCloudflareD1Migration(opts = {}) {
   const databaseId = await resolveD1DatabaseId();
   console.log(`[migrate] D1 database UUID: ${databaseId}`);
 
-  console.log('[migrate] Fetching data from Cloudflare D1…');
-  const [kvRows, linkSetRows, clickLogRows] = await Promise.all([
-    fetchAllRows(databaseId, '_cf_KV'),
+  console.log('[migrate] Fetching data from Cloudflare D1 (link_sets, click_logs)…');
+  const [linkSetRows, clickLogRows] = await Promise.all([
     fetchAllRows(databaseId, 'link_sets'),
     fetchAllRows(databaseId, 'click_logs'),
   ]);
@@ -413,12 +381,8 @@ async function runCloudflareD1Migration(opts = {}) {
 
     await client.query('BEGIN');
 
-    console.log('[migrate] Migrating users from _cf_KV…');
-    const userStats = await migrateUsers(client, kvRows);
-    console.log(
-      `[migrate] Users     → inserted: ${userStats.inserted}, ` +
-      `skipped: ${userStats.skipped}, errors: ${userStats.errors}`
-    );
+    // _cf_KV is a Cloudflare-internal table — skip D1 user migration entirely
+    const userStats = await reportExistingUsers(client);
 
     console.log('[migrate] Migrating link_sets…');
     const linkSetStats = await migrateLinkSets(client, linkSetRows);
@@ -436,7 +400,7 @@ async function runCloudflareD1Migration(opts = {}) {
 
     await client.query('COMMIT');
 
-    const totalErrors = userStats.errors + linkSetStats.errors + clickLogStats.errors;
+    const totalErrors = linkSetStats.errors + clickLogStats.errors;
     if (totalErrors > 0) {
       console.warn(`[migrate] ⚠  Migration completed with ${totalErrors} error(s).`);
     } else {
@@ -476,6 +440,7 @@ if (require.main === module) {
   console.log(`[migrate] CF account   : ${CF_ACCOUNT_ID}`);
   const maskedUrl = (process.env.DATABASE_URL || '').replace(/([^:]+):([^@]+)@/, '<credentials>@');
   console.log(`[migrate] PostgreSQL   : ${maskedUrl}`);
+  console.log('[migrate] Tables       : link_sets, click_logs (users skipped — _cf_KV inaccessible)');
   console.log('');
 
   runCloudflareD1Migration().then((stats) => {
@@ -485,10 +450,12 @@ if (require.main === module) {
     console.log('├──────────────────┬──────────┬──────────┬────────────────┤');
     console.log('│ Table            │ Inserted │ Skipped  │ Errors         │');
     console.log('├──────────────────┼──────────┼──────────┼────────────────┤');
-    console.log(`│ users (_cf_KV)   │ ${String(stats.users.inserted).padEnd(8)} │ ${String(stats.users.skipped).padEnd(8)} │ ${String(stats.users.errors).padEnd(14)} │`);
+    console.log(`│ users (pg only)  │ ${String(stats.users.inserted).padEnd(8)} │ ${String(stats.users.skipped).padEnd(8)} │ ${String(stats.users.errors).padEnd(14)} │`);
     console.log(`│ link_sets        │ ${String(stats.linkSets.inserted).padEnd(8)} │ ${String(stats.linkSets.skipped).padEnd(8)} │ ${String(stats.linkSets.errors).padEnd(14)} │`);
     console.log(`│ click_logs       │ ${String(stats.clickLogs.inserted).padEnd(8)} │ ${String(stats.clickLogs.skipped).padEnd(8)} │ ${String(stats.clickLogs.errors).padEnd(14)} │`);
     console.log('└──────────────────┴──────────┴──────────┴────────────────┘');
+    console.log('');
+    console.log('Note: users were not migrated from D1 (_cf_KV is inaccessible via API).');
   }).catch((err) => {
     console.error('[migrate] Unhandled error:', err);
     process.exit(1);
