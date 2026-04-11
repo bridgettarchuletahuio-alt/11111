@@ -873,8 +873,10 @@ https://wa.me/789?text=START"></textarea>
                     alert('未找到该历史任务，请先刷新历史。');
                     return;
                 }
-                // 只保留 url 和 quota 字段
-                const links = editableSublinks.map(l => ({ url: l.url, quota: l.quota }));
+                // 提取 URL 字符串数组（后端 sanitizeLinks 期望字符串数组）
+                const links = editableSublinks.map(l =>
+                    typeof l === 'string' ? l : (l.url || '')
+                ).filter(Boolean);
                 // 用统一的 apiPost 方法，自动带密码
                 const resp = await apiPost({
                     action: 'updateSet',
