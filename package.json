@@ -1,0 +1,16 @@
+{
+  "name": "11111",
+  "version": "1.0.0",
+  "description": "链接分配器 Railway 后端",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.22.1",
+    "pg": "^8.20.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
