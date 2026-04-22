@@ -4,8 +4,39 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>链接分配器</title>
-                // ...（此处为正常 fetchHistory 函数结尾，无需全局 return）
+    <style>
+        body {
+            margin: 0;
+            padding: 18px;
+            background: #f3f6fb;
+            color: #1f2937;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
+        .container {
+            max-width: 960px;
+            margin: 0 auto;
+        }
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        h2 {
+            margin: 0 0 12px;
+            font-size: 18px;
+            color: #1a1a2e;
+        }
+        textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #d6dbe4;
+            border-radius: 6px;
+            font-size: 14px;
+            resize: vertical;
+            box-sizing: border-box;
+            background: #fff;
         }
         .topbar h1 {
             font-size: 18px;
@@ -67,8 +98,6 @@
         }
         .tab-content.active {
             display: block;
-        }
-                // ...（此处为正常 fetchHistory 函数结尾，无需全局 return）
         }
         button {
             background: #0066cc;
@@ -557,16 +586,18 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
     async function handleAuthAction() {
         const username = document.getElementById('auth-username').value.trim();
         const password = document.getElementById('auth-password').value;
-        const isRegister = document.getElementById('auth-action-btn').textContent.includes('注册');
+        const isRegister = authMode === 'register';
         if (!username || !password) {
-            document.getElementById('auth-error').textContent = '请输入用户名和密码';
+            document.getElementById('auth-error').textContent = '请输入用户名和密码。';
             return;
         }
         document.getElementById('auth-error').textContent = '';
         try {
             if (isRegister) {
                 const payload = await apiPost({ action: 'register', username, password }, { skipStoredUser: true });
-                document.getElementById('auth-error').textContent = '注册成功，请登录';
+                authMode = 'login';
+                document.getElementById('auth-title').textContent = '🔒 登录';
+                document.getElementById('auth-error').textContent = '注册成功，请登录。';
                 document.getElementById('auth-action-btn').textContent = '登录';
                 document.getElementById('toggle-auth-mode').textContent = '没有账号？注册';
                 return;
@@ -836,8 +867,8 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                             <div class="url-preview">${shortUrl}</div>
                             <div class="mini-row" style="margin-top: 8px;">
                                 <button class="mini-btn copy-btn" onclick="copyText('${shortUrl.replace(/'/g, "&#39;")}', this)">复制短链</button>
-                                <button class="mini-btn" onclick="setStatsId('${String(id).replace(/'/g, "&#39;")}")">查看统计</button>
-                                <button class="mini-btn secondary-btn" onclick="openSublinkEditor('${String(id).replace(/'/g, "&#39;")}")">管理子链接</button>
+                                <button class="mini-btn" onclick="setStatsId('${String(id).replace(/'/g, "&#39;")}')">查看统计</button>
+                                <button class="mini-btn secondary-btn" onclick="openSublinkEditor('${String(id).replace(/'/g, "&#39;")}')">管理子链接</button>
                             </div>
                         </div>
                     `;
@@ -850,28 +881,6 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                     <button class="mini-btn" onclick="fetchHistory(${historyOffset + historyLimit})">下一页</button>
                   </div>
                 `;
-            } catch (error) {
-                if (handleAuthFailure(error)) {
-                    return;
-                }
-                output.className = 'empty-text';
-                output.textContent = '历史加载失败：' + error.message;
-            }
-        }
-
-                    return `
-                        <div class="history-item">
-                            <div><strong>ID:</strong> ${id || '(未知)'}</div>
-                            <div class="history-meta">创建时间: ${createdAt} | 链接数: ${count}${ownerText}</div>
-                            <div class="url-preview">${shortUrl}</div>
-                            <div class="mini-row" style="margin-top: 8px;">
-                                <button class="mini-btn copy-btn" onclick="copyText('${shortUrl.replace(/'/g, "&#39;")}', this)">复制短链</button>
-                                <button class="mini-btn" onclick="setStatsId('${String(id).replace(/'/g, "&#39;")}')">查看统计</button>
-                                <button class="mini-btn secondary-btn" onclick="openSublinkEditor('${String(id).replace(/'/g, "&#39;")}')">管理子链接</button>
-                            </div>
-                        </div>
-                    `;
-                }).join('');
             } catch (error) {
                 if (handleAuthFailure(error)) {
                     return;
@@ -898,7 +907,7 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
             }
 
             const links = Array.isArray(item.links)
-                ? item.links.map(link => String(link || '').trim()).filter(Boolean)
+                ? item.links.map(link => ({ url: String(link || '').trim(), quota: 1 })).filter(link => link.url)
                 : [];
 
             if (links.length === 0) {
@@ -926,18 +935,19 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
 
             list.className = '';
             list.innerHTML = editableSublinks.map((item, idx) => {
-                // 保证每个子链接都是对象，且额度最小为1
-                if (typeof item === 'string') item = { url: item, quota: 1 };
-                if (!item.quota || item.quota < 1) item.quota = 1;
-                editableSublinks[idx] = item;
+                const normalizedItem = {
+                    url: String(item && item.url || '').trim(),
+                    quota: Math.max(1, parseInt(item && item.quota, 10) || 1)
+                };
+                editableSublinks[idx] = normalizedItem;
                 return `
                 <div class="sublink-row">
                     <div class="sublink-index">#${idx}</div>
-                    <div class="sublink-url">${item.url}</div>
+                    <div class="sublink-url">${normalizedItem.url}</div>
                     <div style="display:flex;align-items:center;gap:4px;">
                         <label>额度</label>
                         <button class="mini-btn" onclick="window.changeSublinkQuota(${idx},-1)">-</button>
-                        <input type="number" value="${item.quota}" min="1" style="width:70px;text-align:center;" onchange="window.setSublinkQuota(${idx},this.value)">
+                        <input type="number" value="${normalizedItem.quota}" min="1" style="width:70px;text-align:center;" onchange="window.setSublinkQuota(${idx},this.value)">
                         <button class="mini-btn" onclick="window.changeSublinkQuota(${idx},1)">+</button>
                     </div>
                     <button class="mini-btn" onclick="editSublink(${idx})">编辑</button>
@@ -945,38 +955,39 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                 </div>
                 `;
             }).join('');
-                window.changeSublinkQuota = function(idx, delta) {
-                    if (!editableSublinks[idx]) return;
-                    let item = editableSublinks[idx];
-                    if (typeof item === 'string') item = { url: item, quota: 1 };
-                    else item = Object.assign({}, item); // 避免对象引用问题
-                    item.quota = Math.max(1, (parseInt(item.quota, 10) || 1) + delta);
-                    editableSublinks[idx] = item;
-                    renderSublinkList();
+        }
+
+        window.changeSublinkQuota = function(idx, delta) {
+            if (!editableSublinks[idx]) return;
+            const item = Object.assign({}, editableSublinks[idx]);
+            item.quota = Math.max(1, (parseInt(item.quota, 10) || 1) + delta);
+            editableSublinks[idx] = item;
+            renderSublinkList();
+        };
+
+        window.setSublinkQuota = function(idx, val) {
+            if (!editableSublinks[idx]) return;
+            const item = Object.assign({}, editableSublinks[idx]);
+            item.quota = Math.max(1, parseInt(val, 10) || 1);
+            editableSublinks[idx] = item;
+        };
+
+        function setupQuotaButtons() {
+            [
+                { minus: 'minusQuotaDistribute', input: 'quotaDistribute', plus: 'plusQuotaDistribute' }
+            ].forEach(cfg => {
+                const minus = document.getElementById(cfg.minus);
+                const plus = document.getElementById(cfg.plus);
+                const input = document.getElementById(cfg.input);
+                if (minus && plus && input) {
+                    minus.onclick = () => {
+                        input.value = Math.max(1, parseInt(input.value, 10) - 1 || 1);
+                    };
+                    plus.onclick = () => {
+                        input.value = parseInt(input.value, 10) + 1 || 1;
+                    };
                 }
-                window.setSublinkQuota = function(idx, val) {
-                    if (!editableSublinks[idx]) return;
-                    let item = editableSublinks[idx];
-                    if (typeof item === 'string') item = { url: item, quota: 1 };
-                    else item = Object.assign({}, item);
-                    item.quota = Math.max(1, parseInt(val, 10) || 1);
-                    editableSublinks[idx] = item;
-                }
-                // 分配界面额度按钮逻辑
-                function setupQuotaButtons() {
-                    [
-                        {minus:'minusQuotaDistribute',input:'quotaDistribute',plus:'plusQuotaDistribute'}
-                    ].forEach(cfg => {
-                        let minus = document.getElementById(cfg.minus);
-                        let plus = document.getElementById(cfg.plus);
-                        let input = document.getElementById(cfg.input);
-                        if(minus && plus && input) {
-                            minus.onclick = ()=>{input.value=Math.max(1,parseInt(input.value,10)-1||1)};
-                            plus.onclick = ()=>{input.value=parseInt(input.value,10)+1||1};
-                        }
-                    });
-                }
-                window.onload = function() { setupQuotaButtons(); };
+            });
         }
 
         function addSublink() {
@@ -994,7 +1005,7 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                 return;
             }
 
-            editableSublinks.push(link);
+            editableSublinks.push({ url: link, quota: 1 });
             renderSublinkList();
         }
 
@@ -1003,7 +1014,8 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                 return;
             }
 
-            const oldValue = editableSublinks[index];
+            const currentItem = editableSublinks[index];
+            const oldValue = currentItem && currentItem.url ? currentItem.url : '';
             const input = prompt('编辑子链接（http/https）', oldValue);
             if (input == null) return;
 
@@ -1013,7 +1025,10 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                 return;
             }
 
-            editableSublinks[index] = nextValue;
+            editableSublinks[index] = {
+                url: nextValue,
+                quota: Math.max(1, parseInt(currentItem && currentItem.quota, 10) || 1)
+            };
             renderSublinkList();
         }
 
@@ -1051,9 +1066,14 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                     return;
                 }
                 // 提取 URL 字符串数组（后端 sanitizeLinks 期望字符串数组）
-                const links = editableSublinks.map(l =>
-                    typeof l === 'string' ? l : (l.url || '')
-                ).filter(Boolean);
+                const links = editableSublinks.flatMap(item => {
+                    const url = String(item && item.url || '').trim();
+                    const quota = Math.max(1, parseInt(item && item.quota, 10) || 1);
+                    if (!url) {
+                        return [];
+                    }
+                    return Array.from({ length: quota }, () => url);
+                });
                 const name = document.getElementById('sublinkEditorName').value.trim();
                 // 用统一的 apiPost 方法，自动带密码
                 const resp = await apiPost({
@@ -1101,6 +1121,28 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                 output.className = 'empty-text';
                 output.textContent = '统计查询失败：' + error.message;
             }
+        }
+
+        function prefillStatsId(id) {
+            document.getElementById('statsIdInput').value = id || '';
+        }
+
+        function setStatsId(id) {
+            const normalizedId = String(id || '').trim();
+            if (!normalizedId) {
+                return;
+            }
+            prefillStatsId(normalizedId);
+            fetchStats(normalizedId);
+        }
+
+        function fetchStatsByInput() {
+            const id = document.getElementById('statsIdInput').value.trim();
+            if (!id) {
+                alert('请输入合并链接 ID。');
+                return;
+            }
+            fetchStats(id);
         }
 
         function switchTab(tab) {
@@ -1295,31 +1337,7 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
         document.getElementById('auth-password').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') handleAuthAction();
         });
-        async function handleAuthAction() {
-            const username = document.getElementById('auth-username').value.trim();
-            const password = document.getElementById('auth-password').value.trim();
-            const errEl = document.getElementById('auth-error');
-            if (!username || !password) {
-                errEl.textContent = '请输入用户名和密码。';
-                return;
-            }
-            errEl.textContent = authMode === 'login' ? '登录中...' : '注册中...';
-            try {
-                if (authMode === 'register') {
-                    const payload = await apiPost({ action: 'register', username, password }, { skipStoredUser: true });
-                    errEl.textContent = '注册成功，请登录。';
-                    authMode = 'login';
-                    document.getElementById('auth-title').textContent = '🔒 登录';
-                    document.getElementById('auth-action-btn').textContent = '登录';
-                    document.getElementById('toggle-auth-mode').textContent = '没有账号？注册';
-                } else {
-                    const payload = await apiPost({ action: 'login', username, password }, { skipStoredUser: true });
-                    unlockForUser(payload.user, password);
-                }
-            } catch (error) {
-                errEl.textContent = error.message || '操作失败';
-            }
-        }
+        window.toggleAuthMode = toggleAuthMode;
         async function fetchUserList() {
             const output = document.getElementById('userListOutput');
             output.className = 'empty-text';
@@ -1410,6 +1428,7 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
             }
         }
 
+        setupQuotaButtons();
         restoreLogin();
     </script>
 </body>
