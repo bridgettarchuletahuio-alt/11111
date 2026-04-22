@@ -591,6 +591,31 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
     </div>
 
     <script>
+    // 登录/注册按钮事件处理
+    async function handleAuthAction() {
+        const username = document.getElementById('auth-username').value.trim();
+        const password = document.getElementById('auth-password').value;
+        const isRegister = document.getElementById('auth-action-btn').textContent.includes('注册');
+        if (!username || !password) {
+            document.getElementById('auth-error').textContent = '请输入用户名和密码';
+            return;
+        }
+        document.getElementById('auth-error').textContent = '';
+        try {
+            if (isRegister) {
+                const payload = await apiPost({ action: 'register', username, password }, { skipStoredUser: true });
+                document.getElementById('auth-error').textContent = '注册成功，请登录';
+                document.getElementById('auth-action-btn').textContent = '登录';
+                document.getElementById('toggle-auth-mode').textContent = '没有账号？注册';
+                return;
+            } else {
+                const payload = await apiPost({ action: 'login', username, password }, { skipStoredUser: true });
+                unlockForUser(payload.user, password);
+            }
+        } catch (error) {
+            document.getElementById('auth-error').textContent = error.message || '登录失败';
+        }
+    }
         const MIGRATION_CONFIG = {
             useWorker: true,
             workerBaseUrl: 'https://11111-production-d2b4.up.railway.app',
