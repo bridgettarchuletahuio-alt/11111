@@ -602,6 +602,9 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
         const historySetMap = new Map();
         let activeHistorySetId = '';
         let editableSublinks = [];
+        // 分页参数
+        let historyOffset = 0;
+        const historyLimit = 100;
 
         const normalizedWorkerBaseUrl = MIGRATION_CONFIG.workerBaseUrl.replace(/\/+$/, '');
         const SCRIPT_URL = MIGRATION_CONFIG.useWorker
@@ -805,36 +808,15 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
             });
         }
 
-        function setStatsId(id) {
-            const input = document.getElementById('statsIdInput');
-            input.value = id;
-            fetchStats(id);
-        }
-
-        function prefillStatsId(id) {
-            document.getElementById('statsIdInput').value = id;
-            const output = document.getElementById('statsOutput');
-            output.className = 'empty-text';
-            output.textContent = '已填入最新ID，点击“查询统计”即可查看。';
-        }
-
-        function fetchStatsByInput() {
-            const id = document.getElementById('statsIdInput').value.trim();
-            if (!id) {
-                alert('请先输入链接ID！');
-                return;
-            }
-            fetchStats(id);
-        }
-
-        async function fetchHistory() {
+        async function fetchHistory(offset = 0) {
+            historyOffset = offset;
             const output = document.getElementById('historyOutput');
             output.className = 'empty-text';
             output.textContent = '历史加载中...';
             historySetMap.clear();
 
             try {
-                const payload = await apiPost({ action: 'listSets', limit: 20 });
+                const payload = await apiPost({ action: 'listSets', limit: historyLimit, offset: historyOffset });
                 const items = extractHistoryItems(payload);
 
                 if (items.length === 0) {
@@ -854,6 +836,40 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                     const ownerLabel = item.ownerLabel || item.owner_label || '';
                     const shortUrl = buildShortUrl(id);
                     const ownerText = ownerLabel ? ' | 归属: ' + ownerLabel : '';
+                    const username = item.username || '';
+                    const userRemark = item.userRemark || '';
+                    const userText = username ? ` | 用户: ${username}` : '';
+                    const remarkText = userRemark ? ` | 备注: ${userRemark}` : '';
+
+                    return `
+                        <div class="history-item">
+                            <div><strong>ID:</strong> ${id || '(未知)'}</div>
+                            <div class="history-meta">创建时间: ${createdAt} | 链接数: ${count}${ownerText}${userText}${remarkText}</div>
+                            <div class="url-preview">${shortUrl}</div>
+                            <div class="mini-row" style="margin-top: 8px;">
+                                <button class="mini-btn copy-btn" onclick="copyText('${shortUrl.replace(/'/g, "&#39;")}', this)">复制短链</button>
+                                <button class="mini-btn" onclick="setStatsId('${String(id).replace(/'/g, "&#39;")}")">查看统计</button>
+                                <button class="mini-btn secondary-btn" onclick="openSublinkEditor('${String(id).replace(/'/g, "&#39;")}")">管理子链接</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                // 分页按钮
+                output.innerHTML += `
+                  <div style="margin-top:10px;text-align:center;">
+                    <button class="mini-btn" onclick="fetchHistory(${Math.max(0, historyOffset - historyLimit)})" ${historyOffset === 0 ? 'disabled' : ''}>上一页</button>
+                    <button class="mini-btn" onclick="fetchHistory(${historyOffset + historyLimit})">下一页</button>
+                  </div>
+                `;
+            } catch (error) {
+                if (handleAuthFailure(error)) {
+                    return;
+                }
+                output.className = 'empty-text';
+                output.textContent = '历史加载失败：' + error.message;
+            }
+        }
 
                     return `
                         <div class="history-item">
