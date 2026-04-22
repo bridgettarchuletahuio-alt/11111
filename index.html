@@ -593,6 +593,8 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
     <script>
     // 登录/注册按钮事件处理
     async function handleAuthAction() {
+    }
+    window.handleAuthAction = handleAuthAction;
         const username = document.getElementById('auth-username').value.trim();
         const password = document.getElementById('auth-password').value;
         const isRegister = document.getElementById('auth-action-btn').textContent.includes('注册');
