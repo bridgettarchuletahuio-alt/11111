@@ -12,8 +12,11 @@ CREATE TABLE IF NOT EXISTS link_sets (
     links_json TEXT NOT NULL,
     current_index INTEGER NOT NULL DEFAULT 0,
     click_count INTEGER NOT NULL DEFAULT 0,
+    user_id INTEGER,
+    user_remark TEXT DEFAULT '',
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS click_logs (

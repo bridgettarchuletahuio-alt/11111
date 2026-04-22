@@ -444,14 +444,24 @@ async function initDurableSet(env, id, links, currentIndex) {
 }
 
 async function listSets(env, limit, access) {
-    const { results } = access.mode === 'owner'
-        ? await env.DB.prepare(
-            'SELECT id, name, links_json, current_index, click_count, created_at, updated_at FROM link_sets WHERE id LIKE ? ORDER BY datetime(created_at) DESC LIMIT ?'
-        ).bind(`${access.owner.code}%`, limit).all()
-        : await env.DB.prepare(
-            'SELECT id, name, links_json, current_index, click_count, created_at, updated_at FROM link_sets ORDER BY datetime(created_at) DESC LIMIT ?'
-        ).bind(limit).all();
-
+    // 支持分页，返回 user 信息
+    // limit 最大 100，offset 可选
+    limit = clampLimit(Number(limit) || 100);
+    const offset = Number(env.offset || 0);
+    let results;
+    if (access.mode === 'owner') {
+        results = (await env.DB.prepare(
+            `SELECT s.*, u.username, s.user_remark FROM link_sets s
+            LEFT JOIN users u ON s.user_id = u.id
+            WHERE s.id LIKE ? ORDER BY datetime(s.created_at) DESC LIMIT ? OFFSET ?`
+        ).bind(`${access.owner.code}%`, limit, offset).all()).results;
+    } else {
+        results = (await env.DB.prepare(
+            `SELECT s.*, u.username, s.user_remark FROM link_sets s
+            LEFT JOIN users u ON s.user_id = u.id
+            ORDER BY datetime(s.created_at) DESC LIMIT ? OFFSET ?`
+        ).bind(limit, offset).all()).results;
+    }
     return (results || []).map((row) => {
         const links = safeParseArray(row.links_json);
         const ownerCode = extractOwnerCodeFromId(row.id);
@@ -466,7 +476,10 @@ async function listSets(env, limit, access) {
             currentIndex: Number(row.current_index || 0),
             clickCount: Number(row.click_count || 0),
             count: links.length,
-            links
+            links,
+            userId: row.user_id,
+            username: row.username || '',
+            userRemark: row.user_remark || ''
         };
     });
 }
