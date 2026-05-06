@@ -855,10 +855,31 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
             historySetMap.clear();
 
             try {
-                const payload = await apiPost({ action: 'listSets', limit: historyLimit, offset: historyOffset });
-                const items = extractHistoryItems(payload);
+                const items = [];
+                let requestOffset = historyOffset;
+                let keepLoading = true;
+                let lastPayload = null;
+
+                while (keepLoading && items.length < historyLimit) {
+                    const remaining = historyLimit - items.length;
+                    const payload = await apiPost({ action: 'listSets', limit: remaining, offset: requestOffset });
+                    const batch = extractHistoryItems(payload);
+                    lastPayload = payload;
+
+                    if (batch.length === 0) {
+                        keepLoading = false;
+                        break;
+                    }
+
+                    items.push(...batch);
+                    requestOffset += batch.length;
+
+                    const payloadHasMore = payload && typeof payload === 'object' ? payload.hasMore === true : false;
+                    keepLoading = payloadHasMore;
+                }
+
                 historyLoaded = true;
-                historyHasMore = payload && typeof payload === 'object' ? payload.hasMore === true : false;
+                historyHasMore = lastPayload && typeof lastPayload === 'object' ? lastPayload.hasMore === true : false;
 
                 if (items.length === 0) {
                     output.className = 'empty-text';
