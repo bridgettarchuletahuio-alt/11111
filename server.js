@@ -362,10 +362,26 @@ async function handleListSets(payload, req) {
 
   const client = await pool.connect();
   try {
-    const result = await client.query(
-      'SELECT id, name, links_json, current_index, click_count, created_at, updated_at FROM link_sets WHERE owner_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
-      [user.id, limit + 1, offset]
-    );
+    const result = user.role === 'admin'
+      ? await client.query(
+        `SELECT s.id, s.name, s.links_json, s.current_index, s.click_count, s.created_at, s.updated_at,
+                u.username AS owner_username
+         FROM link_sets s
+         LEFT JOIN users u ON u.id = s.owner_id
+         ORDER BY s.created_at DESC
+         LIMIT $1 OFFSET $2`,
+        [limit + 1, offset]
+      )
+      : await client.query(
+        `SELECT s.id, s.name, s.links_json, s.current_index, s.click_count, s.created_at, s.updated_at,
+                u.username AS owner_username
+         FROM link_sets s
+         LEFT JOIN users u ON u.id = s.owner_id
+         WHERE s.owner_id = $1
+         ORDER BY s.created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [user.id, limit + 1, offset]
+      );
     const rows = result.rows.slice(0, limit);
     const hasMore = result.rows.length > limit;
 
@@ -378,6 +394,7 @@ async function handleListSets(payload, req) {
         updatedAt: row.updated_at,
         currentIndex: Number(row.current_index || 0),
         clickCount: Number(row.click_count || 0),
+        username: row.owner_username || '',
         count: links.length,
         links
       };
@@ -874,7 +891,7 @@ function normalizeIndex(value, length) {
 
 function clampLimit(value) {
   if (!Number.isFinite(value) || value <= 0) return 20;
-  return Math.min(Math.floor(value), 100);
+  return Math.min(Math.floor(value), 500);
 }
 
 function clampOffset(value) {
