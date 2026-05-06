@@ -499,6 +499,10 @@
             <div class="info-text">
                 📌 输入多个链接，生成一个特殊URL。用户访问该URL后会按顺序获取每个链接。
             </div>
+            <div style="margin-bottom: 10px;">
+                <label style="display:block;font-size:13px;color:#555;font-weight:500;margin-bottom:6px;">任务名称（可选）：</label>
+                <input type="text" id="mergeTaskName" placeholder="例如：5月 WhatsApp 验证分流" maxlength="120" style="width:100%;padding:9px 10px;border:1px solid #d6dbe4;border-radius:6px;font-size:14px;box-sizing:border-box;background:#fff;">
+            </div>
             <textarea id="mergeInput" rows="6" placeholder="输入链接，每行一个，例如：
 https://wa.me/123?text=START
 https://wa.me/456?text=START
@@ -624,6 +628,8 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
         // 分页参数
         let historyOffset = 0;
         const historyLimit = 100;
+        let historyLoaded = false;
+        let historyHasMore = false;
 
         const normalizedWorkerBaseUrl = MIGRATION_CONFIG.workerBaseUrl.replace(/\/+$/, '');
         const SCRIPT_URL = MIGRATION_CONFIG.useWorker
@@ -759,7 +765,7 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
             // 存储密码用于后续接口
             setStoredUser({ username: user.username, password, role: user.role, id: user.id });
             updateSessionUi(user);
-            fetchHistory();
+            resetHistoryState();
         }
 
         function handleAuthFailure(error) {
@@ -794,8 +800,22 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
             document.getElementById('mergeOutput').innerHTML = '';
             document.getElementById('statsIdInput').value = '';
             document.getElementById('distributeOutput').textContent = '';
+            resetHistoryState();
             showLockedState('');
             document.getElementById('auth-username').focus();
+        }
+
+        function resetHistoryState() {
+            historyOffset = 0;
+            historyLoaded = false;
+            historyHasMore = false;
+            historySetMap.clear();
+            closeSublinkEditor();
+            const output = document.getElementById('historyOutput');
+            output.className = 'empty-text';
+            output.textContent = currentUser
+                ? '展开后加载当前账号的历史记录。'
+                : '登录后可查看当前账号的历史记录。';
         }
 
         function extractHistoryItems(payload) {
@@ -837,10 +857,12 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
             try {
                 const payload = await apiPost({ action: 'listSets', limit: historyLimit, offset: historyOffset });
                 const items = extractHistoryItems(payload);
+                historyLoaded = true;
+                historyHasMore = payload && typeof payload === 'object' ? payload.hasMore === true : false;
 
                 if (items.length === 0) {
                     output.className = 'empty-text';
-                    output.textContent = '当前密码下暂无历史记录。';
+                    output.textContent = historyOffset > 0 ? '这一页没有更多历史记录。' : '当前密码下暂无历史记录。';
                     return;
                 }
 
@@ -850,6 +872,7 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                     if (id) {
                         historySetMap.set(id, item);
                     }
+                    const taskName = String(item.name || '').trim();
                     const createdAt = item.createdAt || item.created_at || item.time || '-';
                     const count = item.count != null ? item.count : (Array.isArray(item.links) ? item.links.length : '-');
                     const ownerLabel = item.ownerLabel || item.owner_label || '';
@@ -862,7 +885,7 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
 
                     return `
                         <div class="history-item">
-                            <div><strong>ID:</strong> ${id || '(未知)'}</div>
+                            <div><strong>ID:</strong> ${id || '(未知)'}${taskName ? ' | <strong>任务名:</strong> ' + taskName : ''}</div>
                             <div class="history-meta">创建时间: ${createdAt} | 链接数: ${count}${ownerText}${userText}${remarkText}</div>
                             <div class="url-preview">${shortUrl}</div>
                             <div class="mini-row" style="margin-top: 8px;">
@@ -878,7 +901,7 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                 output.innerHTML += `
                   <div style="margin-top:10px;text-align:center;">
                     <button class="mini-btn" onclick="fetchHistory(${Math.max(0, historyOffset - historyLimit)})" ${historyOffset === 0 ? 'disabled' : ''}>上一页</button>
-                    <button class="mini-btn" onclick="fetchHistory(${historyOffset + historyLimit})">下一页</button>
+                                        <button class="mini-btn" onclick="fetchHistory(${historyOffset + historyLimit})" ${historyHasMore ? '' : 'disabled'}>下一页</button>
                   </div>
                 `;
             } catch (error) {
@@ -1231,7 +1254,8 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
 
                 // 构建最终链接数组（按 quota 重复）
                 const links = [];
-                let globalName = '';
+                const taskNameInput = document.getElementById('mergeTaskName');
+                let globalName = taskNameInput ? taskNameInput.value.trim() : '';
                 rows.forEach((row, idx) => {
                     const url = rawLines[idx];
                     if (!url) return;
@@ -1259,6 +1283,7 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                 outputDiv.innerHTML = `
                     <div class="link-box">
                         <label>✅ 成功生成短链接！(${links.length} 个分配槽，共 ${rawLines.length} 个链接)</label>
+                        ${globalName ? `<div class="muted-note" style="margin-top:8px;font-size:13px;color:#555;">任务名称：${globalName}</div>` : ''}
                         <input type="text" value="${mergedUrl}" readonly style="margin-top: 10px; font-size: 14px;">
                         <button class="copy-btn" onclick="copyToClipboard(this)">📋 复制链接</button>
                         <button onclick="setStatsId('${id}')">📊 查看该链接统计</button>
@@ -1431,6 +1456,10 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
             if (isCollapsed) {
                 header.classList.remove('collapsed');
                 content.classList.remove('collapsed');
+                const title = (header.textContent || '').trim();
+                if (title.includes('历史记录') && currentUser && !historyLoaded) {
+                    fetchHistory(0);
+                }
             } else {
                 header.classList.add('collapsed');
                 content.classList.add('collapsed');

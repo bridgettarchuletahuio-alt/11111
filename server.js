@@ -19,6 +19,9 @@ const pool = new Pool({
     : false
 });
 
+const STICKY_CACHE_TTL_MS = 60 * 1000;
+const stickyAssignmentCache = new Map();
+
 // ─── Password helpers (scrypt) ────────────────────────────────────────────────
 
 const SCRYPT_KEYLEN = 64;
@@ -45,7 +48,7 @@ async function verifyPassword(password, stored) {
 // ─── UUID ─────────────────────────────────────────────────────────────────────
 
 function newId() {
-  return crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+  return crypto.randomUUID().replace(/-/g, '').slice(0, 8);
 }
 
 // ─── Express app ─────────────────────────────────────────────────────────────
@@ -105,7 +108,9 @@ app.get('/r/:id', async (req, res) => {
     const result = await nextUrlInternal(id, {
       ua: req.headers['user-agent'] || '',
       ref: req.headers['referer'] || '',
-      ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress || ''
+      ip: extractClientIp(req)
+    }, {
+      asyncMetrics: true
     });
     res.setHeader('Cache-Control', 'no-store');
     res.redirect(302, result.url);
@@ -297,20 +302,20 @@ async function handleCreateSet(payload, req) {
 
   const links = sanitizeLinks(payload.links);
   const name = typeof payload.name === 'string' ? payload.name.trim().slice(0, 120) : '';
-  const id = newId();
   const now = new Date().toISOString();
 
   const client = await pool.connect();
   try {
+    const id = await allocateSetId(client);
     await client.query(
       'INSERT INTO link_sets (id, name, links_json, current_index, click_count, created_at, updated_at, owner_id) VALUES ($1, $2, $3, 0, 0, $4, $5, $6)',
       [id, name, JSON.stringify(links), now, now, user.id]
     );
+
+    return { ok: true, id };
   } finally {
     client.release();
   }
-
-  return { ok: true, id };
 }
 
 // ─── updateSet ────────────────────────────────────────────────────────────────
@@ -353,14 +358,16 @@ async function handleUpdateSet(payload, req) {
 async function handleListSets(payload, req) {
   const user = await resolveUser(payload);
   const limit = clampLimit(Number(payload.limit || 20));
+  const offset = clampOffset(Number(payload.offset || 0));
 
   const client = await pool.connect();
   try {
     const result = await client.query(
-      'SELECT id, name, links_json, current_index, click_count, created_at, updated_at FROM link_sets WHERE owner_id = $1 ORDER BY created_at DESC LIMIT $2',
-      [user.id, limit]
+      'SELECT id, name, links_json, current_index, click_count, created_at, updated_at FROM link_sets WHERE owner_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
+      [user.id, limit + 1, offset]
     );
-    const rows = result.rows;
+    const rows = result.rows.slice(0, limit);
+    const hasMore = result.rows.length > limit;
 
     const items = rows.map(row => {
       const links = safeParseArray(row.links_json);
@@ -376,7 +383,7 @@ async function handleListSets(payload, req) {
       };
     });
 
-    return { items };
+    return { items, offset, limit, hasMore };
   } finally {
     client.release();
   }
@@ -384,17 +391,169 @@ async function handleListSets(payload, req) {
 
 // ─── nextUrl (internal) ───────────────────────────────────────────────────────
 
-async function nextUrlInternal(rawId, meta) {
+async function nextUrlInternal(rawId, meta, options = {}) {
   const id = sanitizeId(rawId);
-  const client = await pool.connect();
+  const asyncMetrics = options.asyncMetrics === true;
+  let client = null;
   try {
-    // Fetch current set
+    const ua = typeof meta.ua === 'string' ? meta.ua.slice(0, 500) : '';
+    const ref = typeof meta.ref === 'string' ? meta.ref.slice(0, 1000) : '';
+    const ip = typeof meta.ip === 'string' ? meta.ip.slice(0, 100) : '';
+    const ipHash = ip ? crypto.createHash('sha256').update(ip).digest('hex') : '';
+    const now = new Date().toISOString();
+    const logId = crypto.randomUUID();
+
+    if (ipHash) {
+      const cachedSticky = getStickyAssignmentCache(id, ipHash);
+      if (cachedSticky) {
+        if (asyncMetrics) {
+          scheduleAccessMetrics({
+            id,
+            index: cachedSticky.index,
+            url: cachedSticky.url,
+            now,
+            logId,
+            ua,
+            ref,
+            ipHash,
+            touchAssignment: true
+          });
+        } else {
+          await recordAccessMetrics({
+            id,
+            index: cachedSticky.index,
+            url: cachedSticky.url,
+            now,
+            logId,
+            ua,
+            ref,
+            ipHash,
+            touchAssignment: true
+          });
+        }
+
+        return {
+          ok: true,
+          id,
+          index: cachedSticky.index,
+          url: cachedSticky.url,
+          nextUrl: cachedSticky.url,
+          sticky: true,
+          cached: true
+        };
+      }
+    }
+
+    client = await pool.connect();
+
+    if (ipHash) {
+      const stickyResult = await client.query(
+        `SELECT link_index, url
+         FROM ip_assignments
+         WHERE set_id = $1 AND ip_hash = $2
+         LIMIT 1`,
+        [id, ipHash]
+      );
+
+      if (stickyResult.rows.length > 0) {
+        const stickyRow = stickyResult.rows[0];
+        const stickyIndex = Number(stickyRow.link_index || 0);
+        const stickyUrl = String(stickyRow.url || '');
+
+        if (!stickyUrl || !/^https?:\/\//i.test(stickyUrl)) {
+          throw httpError(409, 'Stored URL is invalid');
+        }
+
+        setStickyAssignmentCache(id, ipHash, stickyIndex, stickyUrl);
+
+        if (asyncMetrics) {
+          scheduleAccessMetrics({
+            id,
+            index: stickyIndex,
+            url: stickyUrl,
+            now,
+            logId,
+            ua,
+            ref,
+            ipHash,
+            touchAssignment: true
+          });
+        } else {
+          await recordAccessMetrics({
+            id,
+            index: stickyIndex,
+            url: stickyUrl,
+            now,
+            logId,
+            ua,
+            ref,
+            ipHash,
+            touchAssignment: true
+          });
+        }
+
+        return { ok: true, id, index: stickyIndex, url: stickyUrl, nextUrl: stickyUrl, sticky: true };
+      }
+    }
+
+    await client.query('BEGIN');
+
     const setResult = await client.query(
-      'SELECT id, links_json, current_index FROM link_sets WHERE id = $1',
+      'SELECT id, links_json, current_index FROM link_sets WHERE id = $1 FOR UPDATE',
       [id]
     );
     if (setResult.rows.length === 0) {
       throw httpError(404, 'Link set not found');
+    }
+
+    if (ipHash) {
+      const lockedStickyResult = await client.query(
+        `SELECT link_index, url
+         FROM ip_assignments
+         WHERE set_id = $1 AND ip_hash = $2
+         LIMIT 1`,
+        [id, ipHash]
+      );
+
+      if (lockedStickyResult.rows.length > 0) {
+        const stickyRow = lockedStickyResult.rows[0];
+        const stickyIndex = Number(stickyRow.link_index || 0);
+        const stickyUrl = String(stickyRow.url || '');
+
+        if (!stickyUrl || !/^https?:\/\//i.test(stickyUrl)) {
+          throw httpError(409, 'Stored URL is invalid');
+        }
+        await client.query('COMMIT');
+        setStickyAssignmentCache(id, ipHash, stickyIndex, stickyUrl);
+
+        if (asyncMetrics) {
+          scheduleAccessMetrics({
+            id,
+            index: stickyIndex,
+            url: stickyUrl,
+            now,
+            logId,
+            ua,
+            ref,
+            ipHash,
+            touchAssignment: true
+          });
+        } else {
+          await recordAccessMetrics({
+            id,
+            index: stickyIndex,
+            url: stickyUrl,
+            now,
+            logId,
+            ua,
+            ref,
+            ipHash,
+            touchAssignment: true
+          });
+        }
+
+        return { ok: true, id, index: stickyIndex, url: stickyUrl, nextUrl: stickyUrl, sticky: true };
+      }
     }
 
     const row = setResult.rows[0];
@@ -411,26 +570,110 @@ async function nextUrlInternal(rawId, meta) {
     }
 
     const nextIndex = (currentIndex + 1) % links.length;
-    const now = new Date().toISOString();
-    const logId = crypto.randomUUID();
 
-    const ua = typeof meta.ua === 'string' ? meta.ua.slice(0, 500) : '';
-    const ref = typeof meta.ref === 'string' ? meta.ref.slice(0, 1000) : '';
-    const ip = typeof meta.ip === 'string' ? meta.ip.slice(0, 100) : '';
-    const ipHash = ip ? crypto.createHash('sha256').update(ip).digest('hex') : '';
-
-    // Update index and log click
     await client.query(
-      'UPDATE link_sets SET current_index = $1, click_count = COALESCE(click_count, 0) + 1, updated_at = $2 WHERE id = $3',
+      'UPDATE link_sets SET current_index = $1, updated_at = $2 WHERE id = $3',
       [nextIndex, now, id]
     );
 
-    await client.query(
-      'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-      [logId, id, currentIndex, url, now, ua, ref, ipHash]
-    );
+    if (ipHash) {
+      await client.query(
+        `INSERT INTO ip_assignments (set_id, ip_hash, link_index, url, assigned_at, last_clicked_at)
+         VALUES ($1, $2, $3, $4, $5, $5)
+         ON CONFLICT (set_id, ip_hash) DO UPDATE
+         SET last_clicked_at = EXCLUDED.last_clicked_at`,
+        [id, ipHash, currentIndex, url, now]
+      );
+      setStickyAssignmentCache(id, ipHash, currentIndex, url);
+    }
+
+    await client.query('COMMIT');
+
+    if (asyncMetrics) {
+      scheduleAccessMetrics({
+        id,
+        index: currentIndex,
+        url,
+        now,
+        logId,
+        ua,
+        ref,
+        ipHash,
+        touchAssignment: false,
+        bumpClickCount: true
+      });
+    } else {
+      await recordAccessMetrics({
+        id,
+        index: currentIndex,
+        url,
+        now,
+        logId,
+        ua,
+        ref,
+        ipHash,
+        touchAssignment: false,
+        bumpClickCount: true
+      });
+    }
 
     return { ok: true, id, index: currentIndex, url, nextUrl: url };
+  } catch (error) {
+    if (client) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback failures; the original error is more useful.
+      }
+    }
+    throw error;
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
+}
+
+function scheduleAccessMetrics(payload) {
+  setImmediate(() => {
+    recordAccessMetrics(payload).catch(error => {
+      console.error('[metrics] Failed to persist access metrics:', error.message);
+    });
+  });
+}
+
+async function recordAccessMetrics(payload) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    if (payload.bumpClickCount !== false) {
+      await client.query(
+        'UPDATE link_sets SET click_count = COALESCE(click_count, 0) + 1, updated_at = $1 WHERE id = $2',
+        [payload.now, payload.id]
+      );
+    }
+
+    if (payload.touchAssignment && payload.ipHash) {
+      await client.query(
+        'UPDATE ip_assignments SET last_clicked_at = $1 WHERE set_id = $2 AND ip_hash = $3',
+        [payload.now, payload.id, payload.ipHash]
+      );
+    }
+
+    await client.query(
+      'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+      [payload.logId, payload.id, payload.index, payload.url, payload.now, payload.ua, payload.ref, payload.ipHash]
+    );
+
+    await client.query('COMMIT');
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // Ignore rollback failures for async metrics writes.
+    }
+    throw error;
   } finally {
     client.release();
   }
@@ -447,7 +690,7 @@ async function handleNextUrl(payload, req) {
   const meta = {
     ua: payload.ua || req.headers['user-agent'] || '',
     ref: payload.ref || req.headers['referer'] || '',
-    ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress || ''
+    ip: extractClientIp(req)
   };
 
   return nextUrlInternal(rawId, meta);
@@ -634,6 +877,53 @@ function clampLimit(value) {
   return Math.min(Math.floor(value), 100);
 }
 
+function clampOffset(value) {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.max(0, Math.floor(value));
+}
+
+async function allocateSetId(client) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const id = newId();
+    const existing = await client.query(
+      'SELECT 1 FROM link_sets WHERE id = $1 LIMIT 1',
+      [id]
+    );
+    if (existing.rows.length === 0) {
+      return id;
+    }
+  }
+
+  throw httpError(409, 'Failed to allocate a unique id');
+}
+
+function getStickyAssignmentCache(setId, ipHash) {
+  const key = `${setId}:${ipHash}`;
+  const cached = stickyAssignmentCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    stickyAssignmentCache.delete(key);
+    return null;
+  }
+  return cached;
+}
+
+function setStickyAssignmentCache(setId, ipHash, index, url) {
+  stickyAssignmentCache.set(`${setId}:${ipHash}`, {
+    index,
+    url,
+    expiresAt: Date.now() + STICKY_CACHE_TTL_MS
+  });
+}
+
+function extractClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.socket.remoteAddress || '';
+}
+
 function httpError(status, message) {
   const err = new Error(message);
   err.status = status;
@@ -681,6 +971,18 @@ async function runMigrations() {
       )
     `);
 
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ip_assignments (
+        set_id TEXT NOT NULL,
+        ip_hash TEXT NOT NULL,
+        link_index INTEGER NOT NULL,
+        url TEXT NOT NULL,
+        assigned_at TEXT NOT NULL,
+        last_clicked_at TEXT NOT NULL,
+        PRIMARY KEY (set_id, ip_hash)
+      )
+    `);
+
     // Add owner_id column to link_sets if it doesn't exist
     await client.query(`
       ALTER TABLE link_sets ADD COLUMN IF NOT EXISTS owner_id INTEGER
@@ -694,6 +996,12 @@ async function runMigrations() {
     // Indexes
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_click_logs_set_id ON click_logs(set_id)
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_click_logs_set_ip_hash_clicked_at ON click_logs(set_id, ip_hash, clicked_at)
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_ip_assignments_set_last_clicked_at ON ip_assignments(set_id, last_clicked_at)
     `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_link_sets_owner_id ON link_sets(owner_id)

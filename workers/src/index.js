@@ -196,25 +196,6 @@ function clampLimit(value) {
 }
 
 async function handleActionApi(request, env, executionCtx) {
-        if (action === 'updateSet') {
-            // 参数：id, links
-            const id = sanitizeId(payload.id);
-            const links = Array.isArray(payload.links) ? payload.links : [];
-            if (!id || links.length === 0) {
-                throw httpError(400, '缺少id或links');
-            }
-            // 权限校验
-            const access = await ensureAuthorizedAccess(request, env, new URL(request.url), payload);
-            ensureSetAccess(id, access);
-            // 更新数据库
-            const now = new Date().toISOString();
-            await env.DB.prepare('UPDATE link_sets SET links_json = ?, updated_at = ? WHERE id = ?')
-                .bind(JSON.stringify(links), now, id).run();
-            setLinksMemoryCache(env, id, links);
-            await setLinksKvCache(env, id, links);
-            return json({ ok: true }, 200, request, env);
-        }
-
     const payload = await readJson(request);
     const action = String(payload.action || '').trim();
 
@@ -234,11 +215,20 @@ async function handleActionApi(request, env, executionCtx) {
         const userCountRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM users').first();
         const isFirst = !userCountRow || Number(userCountRow.cnt) === 0;
         const role = isFirst ? 'admin' : 'user';
+        const isAuthorized = isFirst ? 1 : 0;
         const passwordHash = await sha256(password);
         const now = new Date().toISOString();
-        await env.DB.prepare('INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)')
-            .bind(username, passwordHash, role, now).run();
-        return json({ ok: true, role }, 200, request, env);
+        const result = await env.DB.prepare(
+            'INSERT INTO users (username, password_hash, role, is_authorized, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id'
+        ).bind(username, passwordHash, role, isAuthorized, now).first();
+        return json({
+            ok: true,
+            user: {
+                id: Number(result && result.id || 0),
+                username,
+                role
+            }
+        }, 200, request, env);
     }
 
     // 用户登录
@@ -248,13 +238,18 @@ async function handleActionApi(request, env, executionCtx) {
         if (!username || !password) {
             throw httpError(400, '用户名和密码不能为空');
         }
-        const user = await env.DB.prepare('SELECT id, username, password_hash, role FROM users WHERE username = ?').bind(username).first();
+        const user = await env.DB.prepare(
+            'SELECT id, username, password_hash, role, is_authorized FROM users WHERE username = ?'
+        ).bind(username).first();
         if (!user) {
             throw httpError(401, '用户名不存在');
         }
         const passwordHash = await sha256(password);
         if (user.password_hash !== passwordHash) {
             throw httpError(401, '密码错误');
+        }
+        if (!Number(user.is_authorized || 0)) {
+            throw httpError(401, '账号未授权，请联系管理员');
         }
         return json({ ok: true, user: { id: user.id, username: user.username, role: user.role } }, 200, request, env);
     }
@@ -284,13 +279,38 @@ async function handleActionApi(request, env, executionCtx) {
     }
 
     if (action === 'listSets') {
-        const items = await listSets(env, clampLimit(Number(payload.limit || 20)), access);
+        const items = await listSets(
+            env,
+            clampLimit(Number(payload.limit || 20)),
+            clampOffset(Number(payload.offset || 0)),
+            access
+        );
         return json({ items }, 200, request, env);
     }
 
     if (action === 'getStats') {
         const stats = await getStats(env, payload.id, access);
         return json({ id: payload.id, stats }, 200, request, env);
+    }
+
+    if (action === 'updateSet') {
+        const result = await updateSet(env, payload, access);
+        return json(result, 200, request, env);
+    }
+
+    if (action === 'listUsers') {
+        const users = await listUsers(env, access);
+        return json({ users }, 200, request, env);
+    }
+
+    if (action === 'authorizeUser') {
+        await authorizeUser(env, payload, access);
+        return json({ ok: true }, 200, request, env);
+    }
+
+    if (action === 'revokeUser') {
+        await revokeUser(env, payload, access);
+        return json({ ok: true }, 200, request, env);
     }
 
     throw httpError(400, 'Unsupported action');
@@ -300,9 +320,10 @@ async function createSet(env, payload, access) {
     const links = sanitizeLinks(payload.links);
     const name = typeof payload.name === 'string' ? payload.name.trim().slice(0, 120) : '';
     const now = new Date().toISOString();
+    const userId = access.mode === 'user' ? Number(access.user.id) : null;
     const id = access.mode === 'owner'
         ? await createScopedSetId(env, access.owner.code)
-        : sanitizeId(payload.id || crypto.randomUUID().slice(0, 8));
+        : sanitizeId(payload.id || crypto.randomUUID().replace(/-/g, '').slice(0, 8));
 
     if (access.mode !== 'owner') {
         const exists = await env.DB.prepare('SELECT id FROM link_sets WHERE id = ?').bind(id).first();
@@ -312,8 +333,8 @@ async function createSet(env, payload, access) {
     }
 
     await env.DB.prepare(
-        'INSERT INTO link_sets (id, name, links_json, current_index, click_count, created_at, updated_at) VALUES (?, ?, ?, 0, 0, ?, ?)'
-    ).bind(id, name, JSON.stringify(links), now, now).run();
+        'INSERT INTO link_sets (id, name, links_json, current_index, click_count, user_id, created_at, updated_at) VALUES (?, ?, ?, 0, 0, ?, ?, ?)'
+    ).bind(id, name, JSON.stringify(links), userId, now, now).run();
 
     setLinksMemoryCache(env, id, links);
     await setLinksKvCache(env, id, links);
@@ -322,11 +343,103 @@ async function createSet(env, payload, access) {
     return id;
 }
 
+async function updateSet(env, payload, access) {
+    const id = sanitizeId(payload.id);
+    const links = sanitizeLinks(payload.links);
+    const name = typeof payload.name === 'string' ? payload.name.trim().slice(0, 120) : '';
+    const existing = await env.DB.prepare(
+        'SELECT id, user_id, current_index FROM link_sets WHERE id = ?'
+    ).bind(id).first();
+
+    if (!existing) {
+        throw httpError(404, '链接集合不存在');
+    }
+
+    ensureSetAccess(existing, access);
+
+    const now = new Date().toISOString();
+    const currentIndex = normalizeIndex(existing.current_index || 0, links.length);
+    await env.DB.prepare(
+        'UPDATE link_sets SET name = ?, links_json = ?, current_index = ?, updated_at = ? WHERE id = ?'
+    ).bind(name, JSON.stringify(links), currentIndex, now, id).run();
+
+    setLinksMemoryCache(env, id, links);
+    await setLinksKvCache(env, id, links);
+    await initDurableSet(env, id, links, currentIndex);
+
+    return { ok: true, id };
+}
+
 async function nextUrl(env, rawId, meta, options = {}) {
     const id = sanitizeId(rawId);
     const asyncLog = options.asyncLog === true;
     const executionCtx = options.executionCtx;
     const hashIp = options.hashIp !== false;
+    const ua = typeof meta.ua === 'string' ? meta.ua.slice(0, 500) : '';
+    const ref = typeof meta.ref === 'string' ? meta.ref.slice(0, 1000) : '';
+    const ipHash = hashIp ? await sha256(meta.ip || '') : '';
+
+    if (ipHash) {
+        const sticky = await env.DB.prepare(
+            `SELECT link_index, url
+             FROM ip_assignments
+             WHERE set_id = ? AND ip_hash = ?
+             LIMIT 1`
+        ).bind(id, ipHash).first();
+
+        if (sticky) {
+            const stickyIndex = Number(sticky.link_index || 0);
+            const stickyUrl = String(sticky.url || '');
+            const now = new Date().toISOString();
+            const logId = crypto.randomUUID();
+
+            if (!stickyUrl || !/^https?:\/\//i.test(stickyUrl)) {
+                throw httpError(409, 'Stored URL is invalid');
+            }
+
+            if (asyncLog && executionCtx && typeof executionCtx.waitUntil === 'function') {
+                executionCtx.waitUntil((async () => {
+                    try {
+                        await env.DB.batch([
+                            env.DB.prepare(
+                                'UPDATE link_sets SET click_count = COALESCE(click_count, 0) + 1, updated_at = ? WHERE id = ?'
+                            ).bind(now, id),
+                            env.DB.prepare(
+                                'UPDATE ip_assignments SET last_clicked_at = ? WHERE set_id = ? AND ip_hash = ?'
+                            ).bind(now, id, ipHash),
+                            env.DB.prepare(
+                                'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                            ).bind(logId, id, stickyIndex, stickyUrl, now, ua, ref, ipHash)
+                        ]);
+                    } catch {
+                        // Metrics writes should never block redirect responses.
+                    }
+                })());
+            } else {
+                await env.DB.batch([
+                    env.DB.prepare(
+                        'UPDATE link_sets SET click_count = COALESCE(click_count, 0) + 1, updated_at = ? WHERE id = ?'
+                    ).bind(now, id),
+                    env.DB.prepare(
+                        'UPDATE ip_assignments SET last_clicked_at = ? WHERE set_id = ? AND ip_hash = ?'
+                    ).bind(now, id, ipHash),
+                    env.DB.prepare(
+                        'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                    ).bind(logId, id, stickyIndex, stickyUrl, now, ua, ref, ipHash)
+                ]);
+            }
+
+            return {
+                ok: true,
+                id,
+                index: stickyIndex,
+                url: stickyUrl,
+                nextUrl: stickyUrl,
+                clicks: null,
+                sticky: true
+            };
+        }
+    }
 
     const fast = await nextFromDurable(env, id);
     const currentIndex = Number(fast.index || 0);
@@ -334,8 +447,6 @@ async function nextUrl(env, rawId, meta, options = {}) {
     const url = String(fast.url || fast.nextUrl || '');
     const now = new Date().toISOString();
     const logId = crypto.randomUUID();
-    const ua = typeof meta.ua === 'string' ? meta.ua.slice(0, 500) : '';
-    const ref = typeof meta.ref === 'string' ? meta.ref.slice(0, 1000) : '';
     const updateIndexStmt = env.DB.prepare(
         'UPDATE link_sets SET current_index = ?, updated_at = ? WHERE id = ?'
     ).bind(nextIndexValue, now, id);
@@ -344,11 +455,17 @@ async function nextUrl(env, rawId, meta, options = {}) {
     ).bind(id);
 
     if (asyncLog && executionCtx && typeof executionCtx.waitUntil === 'function') {
-        await updateIndexStmt.run();
+        await env.DB.batch([
+            updateIndexStmt,
+            env.DB.prepare(
+                `INSERT INTO ip_assignments (set_id, ip_hash, link_index, url, assigned_at, last_clicked_at)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(set_id, ip_hash) DO UPDATE SET last_clicked_at = excluded.last_clicked_at`
+            ).bind(id, ipHash, currentIndex, url, now, now)
+        ]);
 
         executionCtx.waitUntil((async () => {
             try {
-                const ipHash = hashIp ? await sha256(meta.ip || '') : '';
                 await env.DB.batch([
                     bumpClickCountStmt,
                     env.DB.prepare(
@@ -360,10 +477,14 @@ async function nextUrl(env, rawId, meta, options = {}) {
             }
         })());
     } else {
-        const ipHash = hashIp ? await sha256(meta.ip || '') : '';
         await env.DB.batch([
             updateIndexStmt,
             bumpClickCountStmt,
+            env.DB.prepare(
+                `INSERT INTO ip_assignments (set_id, ip_hash, link_index, url, assigned_at, last_clicked_at)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(set_id, ip_hash) DO UPDATE SET last_clicked_at = excluded.last_clicked_at`
+            ).bind(id, ipHash, currentIndex, url, now, now),
             env.DB.prepare(
                 'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
             ).bind(logId, id, currentIndex, url, now, ua, ref, ipHash)
@@ -387,8 +508,7 @@ async function handleRedirect(rawId, request, env, executionCtx) {
         ip: request.headers.get('CF-Connecting-IP') || ''
     }, {
         asyncLog: true,
-        executionCtx,
-        hashIp: false
+        executionCtx
     });
 
     const redirectResponse = Response.redirect(result.url, 302);
@@ -443,11 +563,11 @@ async function initDurableSet(env, id, links, currentIndex) {
     }
 }
 
-async function listSets(env, limit, access) {
+async function listSets(env, limit, offset, access) {
     // 支持分页，返回 user 信息
     // limit 最大 100，offset 可选
     limit = clampLimit(Number(limit) || 100);
-    const offset = Number(env.offset || 0);
+    offset = clampOffset(Number(offset || 0));
     let results;
     if (access.mode === 'owner') {
         results = (await env.DB.prepare(
@@ -455,6 +575,12 @@ async function listSets(env, limit, access) {
             LEFT JOIN users u ON s.user_id = u.id
             WHERE s.id LIKE ? ORDER BY datetime(s.created_at) DESC LIMIT ? OFFSET ?`
         ).bind(`${access.owner.code}%`, limit, offset).all()).results;
+    } else if (access.mode === 'user') {
+        results = (await env.DB.prepare(
+            `SELECT s.*, u.username, s.user_remark FROM link_sets s
+            LEFT JOIN users u ON s.user_id = u.id
+            WHERE s.user_id = ? ORDER BY datetime(s.created_at) DESC LIMIT ? OFFSET ?`
+        ).bind(Number(access.user.id), limit, offset).all()).results;
     } else {
         results = (await env.DB.prepare(
             `SELECT s.*, u.username, s.user_remark FROM link_sets s
@@ -486,14 +612,15 @@ async function listSets(env, limit, access) {
 
 async function getStats(env, rawId, access) {
     const id = sanitizeId(rawId);
-    ensureSetAccess(id, access);
     const setRow = await env.DB.prepare(
-        'SELECT links_json FROM link_sets WHERE id = ?'
+        'SELECT id, user_id, links_json FROM link_sets WHERE id = ?'
     ).bind(id).first();
 
     if (!setRow) {
         throw httpError(404, 'Link set not found');
     }
+
+    ensureSetAccess(setRow, access);
 
     const links = safeParseArray(setRow.links_json);
     setLinksMemoryCache(env, id, links);
@@ -516,6 +643,43 @@ async function getStats(env, rawId, access) {
             lastClickedAt: stat.lastClickedAt
         };
     });
+}
+
+async function listUsers(env, access) {
+    ensureAdminAccess(access);
+    const result = await env.DB.prepare(
+        'SELECT id, username, role, is_authorized, created_at FROM users ORDER BY datetime(created_at) DESC'
+    ).all();
+    return (result.results || []).map((row) => ({
+        id: Number(row.id || 0),
+        username: row.username || '',
+        role: row.role || 'user',
+        is_authorized: Number(row.is_authorized || 0),
+        created_at: row.created_at || ''
+    }));
+}
+
+async function authorizeUser(env, payload, access) {
+    ensureAdminAccess(access);
+    const userId = Number(payload.userId || 0);
+    if (!userId) {
+        throw httpError(400, '缺少 userId 参数');
+    }
+
+    await env.DB.prepare('UPDATE users SET is_authorized = 1 WHERE id = ?').bind(userId).run();
+}
+
+async function revokeUser(env, payload, access) {
+    ensureAdminAccess(access);
+    const userId = Number(payload.userId || 0);
+    if (!userId) {
+        throw httpError(400, '缺少 userId 参数');
+    }
+    if (access.mode === 'user' && Number(access.user.id) === userId) {
+        throw httpError(400, '无法撤销自己的权限');
+    }
+
+    await env.DB.prepare('UPDATE users SET is_authorized = 0 WHERE id = ?').bind(userId).run();
 }
 
 function extractAdminToken(request, url, payload) {
@@ -547,6 +711,14 @@ async function ensureAuthorizedAccess(request, env, url, payload) {
         return { mode: 'admin' };
     }
 
+    if (hasUserCredentials(payload)) {
+        const user = await resolveUserAccess(env, payload);
+        return {
+            mode: 'user',
+            user
+        };
+    }
+
     const password = extractUserPassword(request, url, payload);
     const access = await resolvePasswordAccess(password);
     if (!access) {
@@ -554,6 +726,41 @@ async function ensureAuthorizedAccess(request, env, url, payload) {
     }
 
     return access;
+}
+
+function hasUserCredentials(payload) {
+    return Boolean(String(payload && payload.username || '').trim() || String(payload && payload.password || '').trim());
+}
+
+async function resolveUserAccess(env, payload) {
+    const username = String(payload.username || '').trim();
+    const password = String(payload.password || '').trim();
+
+    if (!username || !password) {
+        throw httpError(401, '未登录，请先登录');
+    }
+
+    const user = await env.DB.prepare(
+        'SELECT id, username, password_hash, role, is_authorized FROM users WHERE username = ?'
+    ).bind(username).first();
+    if (!user) {
+        throw httpError(401, '用户名不存在');
+    }
+
+    const passwordHash = await sha256(password);
+    if (user.password_hash !== passwordHash) {
+        throw httpError(401, '密码错误');
+    }
+
+    if (!Number(user.is_authorized || 0)) {
+        throw httpError(401, '账号未授权，请联系管理员');
+    }
+
+    return {
+        id: Number(user.id || 0),
+        username: user.username || '',
+        role: user.role || 'user'
+    };
 }
 
 function extractUserPassword(request, url, payload) {
@@ -598,13 +805,38 @@ async function createScopedSetId(env, ownerCode) {
 }
 
 function ensureSetAccess(id, access) {
-    if (access.mode !== 'owner') {
+    if (access.mode === 'admin') {
         return;
     }
 
-    if (!id.startsWith(access.owner.code)) {
+    const setId = String(id && id.id || id || '').trim();
+    const userId = id && typeof id === 'object' ? Number(id.user_id || 0) : 0;
+
+    if (access.mode === 'user') {
+        if (userId !== Number(access.user.id || 0)) {
+            throw httpError(404, 'Link set not found');
+        }
+        return;
+    }
+
+    if (access.mode === 'owner' && !setId.startsWith(access.owner.code)) {
         throw httpError(404, 'Link set not found');
     }
+}
+
+function ensureAdminAccess(access) {
+    if (access.mode === 'admin') {
+        return;
+    }
+    if (access.mode === 'user' && access.user && access.user.role === 'admin') {
+        return;
+    }
+    throw httpError(403, '只有管理员可以管理账号');
+}
+
+function clampOffset(value) {
+    if (!Number.isFinite(value) || value < 0) return 0;
+    return Math.floor(value);
 }
 
 function extractOwnerCodeFromId(id) {

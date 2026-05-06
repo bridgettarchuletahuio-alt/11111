@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'user', -- 'admin' 或 'user'
+    is_authorized INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS link_sets (
@@ -31,5 +32,18 @@ CREATE TABLE IF NOT EXISTS click_logs (
     FOREIGN KEY (set_id) REFERENCES link_sets(id)
 );
 
+CREATE TABLE IF NOT EXISTS ip_assignments (
+    set_id TEXT NOT NULL,
+    ip_hash TEXT NOT NULL,
+    link_index INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    assigned_at TEXT NOT NULL,
+    last_clicked_at TEXT NOT NULL,
+    PRIMARY KEY (set_id, ip_hash),
+    FOREIGN KEY (set_id) REFERENCES link_sets(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_click_logs_set_id ON click_logs(set_id);
 CREATE INDEX IF NOT EXISTS idx_click_logs_clicked_at ON click_logs(clicked_at);
+CREATE INDEX IF NOT EXISTS idx_click_logs_set_ip_hash_clicked_at ON click_logs(set_id, ip_hash, clicked_at);
+CREATE INDEX IF NOT EXISTS idx_ip_assignments_set_last_clicked_at ON ip_assignments(set_id, last_clicked_at);
