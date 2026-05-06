@@ -627,7 +627,7 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
         let editableSublinks = [];
         // 分页参数
         let historyOffset = 0;
-        const historyLimit = 200;
+        const historyLimit = 20;
         let historyLoaded = false;
         let historyHasMore = false;
 
@@ -855,31 +855,12 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
             historySetMap.clear();
 
             try {
-                const items = [];
-                let requestOffset = historyOffset;
-                let keepLoading = true;
-                let lastPayload = null;
-
-                while (keepLoading && items.length < historyLimit) {
-                    const remaining = historyLimit - items.length;
-                    const payload = await apiPost({ action: 'listSets', limit: remaining, offset: requestOffset });
-                    const batch = extractHistoryItems(payload);
-                    lastPayload = payload;
-
-                    if (batch.length === 0) {
-                        keepLoading = false;
-                        break;
-                    }
-
-                    items.push(...batch);
-                    requestOffset += batch.length;
-
-                    const payloadHasMore = payload && typeof payload === 'object' ? payload.hasMore === true : false;
-                    keepLoading = payloadHasMore;
-                }
-
+                const payload = await apiPost({ action: 'listSets', limit: historyLimit, offset: historyOffset });
+                const items = extractHistoryItems(payload);
+                const payloadHasMore = payload && typeof payload === 'object' ? payload.hasMore === true : false;
+                const looksLikeLegacyPageSize = items.length >= historyLimit;
                 historyLoaded = true;
-                historyHasMore = lastPayload && typeof lastPayload === 'object' ? lastPayload.hasMore === true : false;
+                historyHasMore = payloadHasMore || looksLikeLegacyPageSize;
 
                 if (items.length === 0) {
                     output.className = 'empty-text';
@@ -919,8 +900,10 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                 }).join('');
 
                 // 分页按钮
+                                const currentPage = Math.floor(historyOffset / historyLimit) + 1;
                 output.innerHTML += `
                   <div style="margin-top:10px;text-align:center;">
+                                        <span style="display:inline-block;margin:0 10px;color:#666;font-size:12px;">第 ${currentPage} 页</span>
                     <button class="mini-btn" onclick="fetchHistory(${Math.max(0, historyOffset - historyLimit)})" ${historyOffset === 0 ? 'disabled' : ''}>上一页</button>
                                         <button class="mini-btn" onclick="fetchHistory(${historyOffset + historyLimit})" ${historyHasMore ? '' : 'disabled'}>下一页</button>
                   </div>
