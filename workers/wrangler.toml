@@ -3,9 +3,9 @@ main = "src/index.js"
 compatibility_date = "2026-03-28"
 
 [vars]
-PUBLIC_BASE_URL = "https://bx-group.uk"
-ALLOWED_ORIGIN = "https://bridgettarchuletahuio-alt.github.io"
-ADMIN_PAGE_URL = "https://bridgettarchuletahuio-alt.github.io/11111/"
+PUBLIC_BASE_URL = "https://whatapp.pro"
+ALLOWED_ORIGIN = "https://whatapp.pro"
+ADMIN_PAGE_URL = "https://whatapp.pro/"
 LINKS_CACHE_TTL_SECONDS = "300"
 
 [[d1_databases]]
