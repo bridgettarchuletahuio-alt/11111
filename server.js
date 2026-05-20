@@ -119,6 +119,33 @@ app.get('/r/:id', async (req, res) => {
   }
 });
 
+const RESERVED_SHORT_PATHS = new Set(['api', 'health', 'index.html', 'redirect.html', '11111']);
+
+app.get('/:id', async (req, res, next) => {
+  const id = String(req.params.id || '').trim();
+
+  if (!/^[A-Za-z0-9_-]{4,64}$/.test(id) || RESERVED_SHORT_PATHS.has(id)) {
+    return next();
+  }
+
+  try {
+    const result = await nextUrlInternal(id, {
+      ua: req.headers['user-agent'] || '',
+      ref: req.headers['referer'] || '',
+      ip: extractClientIp(req)
+    }, {
+      asyncMetrics: true
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    res.redirect(302, result.url);
+  } catch (err) {
+    if (err && err.status === 404) {
+      return next();
+    }
+    res.status(err.status || 500).json({ error: err.message || 'Internal error' });
+  }
+});
+
 // ─── Main API endpoint ────────────────────────────────────────────────────────
 
 app.post('/api', async (req, res) => {

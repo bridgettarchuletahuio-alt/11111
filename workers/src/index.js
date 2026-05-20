@@ -133,6 +133,7 @@ async function routeRequest(request, env, executionCtx) {
     const url = new URL(request.url);
     const pathname = normalizePath(url.pathname);
     const adminUrl = String(env.ADMIN_PAGE_URL || '').trim();
+    const nakedId = pathname.slice(1);
 
     if (request.method === 'OPTIONS') {
         return handleOptions(request, env);
@@ -159,6 +160,10 @@ async function routeRequest(request, env, executionCtx) {
     if (pathname.startsWith('/r/')) {
         const id = pathname.slice(3);
         return handleRedirect(id, request, env, executionCtx);
+    }
+
+    if (isShortLinkPath(pathname)) {
+        return handleRedirect(nakedId, request, env, executionCtx);
     }
 
     if (pathname === '/api' && request.method === 'POST') {
@@ -188,6 +193,14 @@ async function routeRequest(request, env, executionCtx) {
 function normalizePath(pathname) {
     if (!pathname || pathname === '/') return '/';
     return pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
+}
+
+function isShortLinkPath(pathname) {
+    if (!/^\/[A-Za-z0-9_-]{4,64}$/.test(pathname)) {
+        return false;
+    }
+
+    return !['/api', '/health', '/index.html', '/redirect.html', '/11111'].includes(pathname);
 }
 
 function clampLimit(value) {
@@ -997,7 +1010,7 @@ function safeParseArray(value) {
 
 function buildShortUrl(env, id) {
     const base = String(env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
-    return base ? `${base}/r/${id}` : `/r/${id}`;
+    return base ? `${base}/${id}` : `/${id}`;
 }
 
 function json(data, status, request, env) {

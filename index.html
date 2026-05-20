@@ -647,7 +647,7 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
         function buildShortUrl(id) {
             const baseUrl = getBaseUrl();
             return SHORT_LINK_MODE === 'worker'
-                ? baseUrl.replace(/\/+$/, '') + '/r/' + id
+                ? baseUrl.replace(/\/+$/, '') + '/' + id
                 : baseUrl + 'redirect.html#' + id;
         }
 

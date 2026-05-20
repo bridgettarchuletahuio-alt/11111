@@ -7,7 +7,7 @@
 
 这个方案的核心区别：
 
-- 短链直接走 Worker 的 [r/:id](workers/src/index.js) 路由，用户访问时由边缘节点直接返回 302 跳转，不再先打开 [redirect.html](redirect.html)
+- 短链直接走 Worker 路由，当前默认生成 `https://你的域名/abc123`，同时兼容旧的 `https://你的域名/r/abc123`
 - 后台创建、历史、统计统一走 [api](workers/src/index.js) 接口
 - 数据存到 Cloudflare D1，延迟会明显低于 GitHub Pages + Apps Script + Google Sheets
 
@@ -28,7 +28,7 @@
 2. 把 `workerBaseUrl` 改成你的 Worker 域名，比如 `https://xxx.workers.dev`
 3. 把 `useWorker` 从 `false` 改成 `true`
 
-改完后，前台生成的短链会从旧的 `redirect.html#abc123` 变成新的 `https://你的域名/r/abc123`。
+改完后，前台生成的短链会从旧的 `redirect.html#abc123` 变成新的 `https://你的域名/abc123`，旧的 `https://你的域名/r/abc123` 仍可继续访问。
 
 ### 已兼容的接口动作
 
