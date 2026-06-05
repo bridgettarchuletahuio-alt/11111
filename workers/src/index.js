@@ -326,6 +326,11 @@ async function handleActionApi(request, env, executionCtx) {
         return json({ ok: true }, 200, request, env);
     }
 
+    if (action === 'setUserPassword') {
+        await setUserPassword(env, payload, access);
+        return json({ ok: true }, 200, request, env);
+    }
+
     throw httpError(400, 'Unsupported action');
 }
 
@@ -693,6 +698,34 @@ async function revokeUser(env, payload, access) {
     }
 
     await env.DB.prepare('UPDATE users SET is_authorized = 0 WHERE id = ?').bind(userId).run();
+}
+
+async function setUserPassword(env, payload, access) {
+    ensureAdminAccess(access);
+
+    const userId = Number(payload.userId || 0);
+    const newPassword = String(payload.newPassword || '').trim();
+    if (!userId) {
+        throw httpError(400, '缺少 userId 参数');
+    }
+    if (!newPassword) {
+        throw httpError(400, '新密码不能为空');
+    }
+    if (newPassword.length > 128) {
+        throw httpError(400, '新密码过长');
+    }
+
+    const existing = await env.DB.prepare(
+        'SELECT id FROM users WHERE id = ?'
+    ).bind(userId).first();
+    if (!existing) {
+        throw httpError(404, '用户不存在');
+    }
+
+    const passwordHash = await sha256(newPassword);
+    await env.DB.prepare(
+        'UPDATE users SET password_hash = ? WHERE id = ?'
+    ).bind(passwordHash, userId).run();
 }
 
 function extractAdminToken(request, url, payload) {

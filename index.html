@@ -1404,7 +1404,8 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                     const regTime = user.created_at ? new Date(user.created_at).toLocaleString() : '-';
                     const actionBtns = [
                         !user.is_authorized ? `<button class="mini-btn" style="padding:4px 9px;font-size:12px;" onclick="authorizeUser(${user.id})">授权</button>` : '',
-                        canRevoke && user.is_authorized ? `<button class="mini-btn danger-btn" style="padding:4px 9px;font-size:12px;" onclick="revokeUser(${user.id})">禁用</button>` : ''
+                        canRevoke && user.is_authorized ? `<button class="mini-btn danger-btn" style="padding:4px 9px;font-size:12px;" onclick="revokeUser(${user.id})">禁用</button>` : '',
+                        `<button class="mini-btn secondary-btn" style="padding:4px 9px;font-size:12px;" onclick="setUserPassword(${user.id}, '${String(user.username || '').replace(/'/g, "&#39;")}')">改密码</button>`
                     ].join('');
                     return `<tr>
                         <td><strong>${user.username}</strong>${roleBadge}</td>
@@ -1451,6 +1452,35 @@ https://wa.me/789?text=START" oninput="renderMergeLinkRows()"></textarea>
                 fetchUserList();
             } catch (error) {
                 alert('禁用失败：' + (error.message || '未知错误'));
+            }
+        }
+
+        async function setUserPassword(userId, username) {
+            const newPassword = prompt('请输入 ' + username + ' 的新密码');
+            if (newPassword == null) return;
+
+            const trimmedPassword = String(newPassword).trim();
+            if (!trimmedPassword) {
+                alert('新密码不能为空');
+                return;
+            }
+
+            try {
+                await apiPost({ action: 'setUserPassword', userId, newPassword: trimmedPassword });
+
+                if (currentUser && Number(currentUser.id) === Number(userId)) {
+                    setStoredUser({
+                        username: currentUser.username,
+                        password: trimmedPassword,
+                        role: currentUser.role,
+                        id: currentUser.id
+                    });
+                }
+
+                alert('密码修改成功');
+                fetchUserList();
+            } catch (error) {
+                alert('密码修改失败：' + (error.message || '未知错误'));
             }
         }
 

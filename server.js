@@ -198,6 +198,8 @@ async function handleAction(action, payload, req) {
       return handleAuthorizeUser(payload, req);
     case 'revokeUser':
       return handleRevokeUser(payload, req);
+    case 'setUserPassword':
+      return handleSetUserPassword(payload, req);
     default:
       throw httpError(400, 'Unsupported action');
   }
@@ -357,7 +359,7 @@ async function handleUpdateSet(payload, req) {
 
   const client = await pool.connect();
   try {
-    // Verify the set exists and belongs to the current user
+    // Admin can edit all link sets; regular users can only edit their own.
     const existing = await client.query(
       'SELECT id, owner_id FROM link_sets WHERE id = $1',
       [id]
@@ -365,14 +367,21 @@ async function handleUpdateSet(payload, req) {
     if (existing.rows.length === 0) {
       throw httpError(404, '链接集合不存在');
     }
-    if (existing.rows[0].owner_id !== user.id) {
+    if (user.role !== 'admin' && existing.rows[0].owner_id !== user.id) {
       throw httpError(403, '无权修改该链接集合');
     }
 
-    await client.query(
-      'UPDATE link_sets SET name = $1, links_json = $2, updated_at = $3 WHERE id = $4 AND owner_id = $5',
-      [name, JSON.stringify(links), now, id, user.id]
-    );
+    if (user.role === 'admin') {
+      await client.query(
+        'UPDATE link_sets SET name = $1, links_json = $2, updated_at = $3 WHERE id = $4',
+        [name, JSON.stringify(links), now, id]
+      );
+    } else {
+      await client.query(
+        'UPDATE link_sets SET name = $1, links_json = $2, updated_at = $3 WHERE id = $4 AND owner_id = $5',
+        [name, JSON.stringify(links), now, id, user.id]
+      );
+    }
   } finally {
     client.release();
   }
@@ -853,6 +862,54 @@ async function handleRevokeUser(payload, req) {
       [userId]
     );
     return { ok: true };
+  } finally {
+    client.release();
+  }
+}
+
+// ─── Admin: setUserPassword ──────────────────────────────────────────────────
+
+async function handleSetUserPassword(payload, req) {
+  const admin = await resolveUser(payload);
+  if (admin.role !== 'admin') {
+    throw httpError(403, '只有管理员可以管理账号');
+  }
+
+  const userId = Number(payload.userId || 0);
+  const newPassword = String(payload.newPassword || '').trim();
+  if (!userId) {
+    throw httpError(400, '缺少 userId 参数');
+  }
+  if (!newPassword) {
+    throw httpError(400, '新密码不能为空');
+  }
+  if (newPassword.length > 128) {
+    throw httpError(400, '新密码过长');
+  }
+
+  const client = await pool.connect();
+  try {
+    const existing = await client.query(
+      'SELECT id, username FROM users WHERE id = $1',
+      [userId]
+    );
+    if (existing.rows.length === 0) {
+      throw httpError(404, '用户不存在');
+    }
+
+    const passwordHash = await hashPassword(newPassword);
+    await client.query(
+      'UPDATE users SET password_hash = $1 WHERE id = $2',
+      [passwordHash, userId]
+    );
+
+    return {
+      ok: true,
+      user: {
+        id: existing.rows[0].id,
+        username: existing.rows[0].username
+      }
+    };
   } finally {
     client.release();
   }
