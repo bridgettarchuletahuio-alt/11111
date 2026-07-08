@@ -9,6 +9,7 @@ const scrypt = promisify(crypto.scrypt);
 
 const { runDataMigration } = require('./migration');
 const { runCloudflareD1Migration } = require('./scripts/migrate-from-cloudflare');
+const { getStickyIdentity, buildStickyCookie } = require('./sticky');
 
 // ─── Database ────────────────────────────────────────────────────────────────
 
@@ -108,11 +109,15 @@ app.get('/r/:id', async (req, res) => {
     const result = await nextUrlInternal(id, {
       ua: req.headers['user-agent'] || '',
       ref: req.headers['referer'] || '',
-      ip: extractClientIp(req)
+      ip: extractClientIp(req),
+      cookie: req.headers.cookie || ''
     }, {
       asyncMetrics: true
     });
     res.setHeader('Cache-Control', 'no-store');
+    if (result.setCookie) {
+      res.setHeader('Set-Cookie', result.setCookie);
+    }
     res.redirect(302, result.url);
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message || 'Internal error' });
@@ -132,11 +137,15 @@ app.get('/:id', async (req, res, next) => {
     const result = await nextUrlInternal(id, {
       ua: req.headers['user-agent'] || '',
       ref: req.headers['referer'] || '',
-      ip: extractClientIp(req)
+      ip: extractClientIp(req),
+      cookie: req.headers.cookie || ''
     }, {
       asyncMetrics: true
     });
     res.setHeader('Cache-Control', 'no-store');
+    if (result.setCookie) {
+      res.setHeader('Set-Cookie', result.setCookie);
+    }
     res.redirect(302, result.url);
   } catch (err) {
     if (err && err.status === 404) {
@@ -452,101 +461,101 @@ async function nextUrlInternal(rawId, meta, options = {}) {
     const ua = typeof meta.ua === 'string' ? meta.ua.slice(0, 500) : '';
     const ref = typeof meta.ref === 'string' ? meta.ref.slice(0, 1000) : '';
     const ip = typeof meta.ip === 'string' ? meta.ip.slice(0, 100) : '';
-    const ipHash = ip ? crypto.createHash('sha256').update(ip).digest('hex') : '';
+    const stickyIdentity = getStickyIdentity({ cookieHeader: meta.cookie || '', ip });
+    const resolvedCookieValue = stickyIdentity.cookieValue || `customer-${crypto.randomUUID()}`;
+    const identityHash = crypto.createHash('sha256').update(resolvedCookieValue).digest('hex');
+    const setCookie = stickyIdentity.cookieValue ? null : buildStickyCookie(resolvedCookieValue);
     const now = new Date().toISOString();
     const logId = crypto.randomUUID();
 
-    if (ipHash) {
-      const cachedSticky = getStickyAssignmentCache(id, ipHash);
-      if (cachedSticky) {
-        if (asyncMetrics) {
-          scheduleAccessMetrics({
-            id,
-            index: cachedSticky.index,
-            url: cachedSticky.url,
-            now,
-            logId,
-            ua,
-            ref,
-            ipHash,
-            touchAssignment: true
-          });
-        } else {
-          await recordAccessMetrics({
-            id,
-            index: cachedSticky.index,
-            url: cachedSticky.url,
-            now,
-            logId,
-            ua,
-            ref,
-            ipHash,
-            touchAssignment: true
-          });
-        }
-
-        return {
-          ok: true,
+    const cachedSticky = getStickyAssignmentCache(id, identityHash);
+    if (cachedSticky) {
+      if (asyncMetrics) {
+        scheduleAccessMetrics({
           id,
           index: cachedSticky.index,
           url: cachedSticky.url,
-          nextUrl: cachedSticky.url,
-          sticky: true,
-          cached: true
-        };
+          now,
+          logId,
+          ua,
+          ref,
+          ipHash: identityHash,
+          touchAssignment: true
+        });
+      } else {
+        await recordAccessMetrics({
+          id,
+          index: cachedSticky.index,
+          url: cachedSticky.url,
+          now,
+          logId,
+          ua,
+          ref,
+          ipHash: identityHash,
+          touchAssignment: true
+        });
       }
+
+      return {
+        ok: true,
+        id,
+        index: cachedSticky.index,
+        url: cachedSticky.url,
+        nextUrl: cachedSticky.url,
+        sticky: true,
+        cached: true,
+        setCookie
+      };
     }
 
     client = await pool.connect();
 
-    if (ipHash) {
-      const stickyResult = await client.query(
-        `SELECT link_index, url
-         FROM ip_assignments
-         WHERE set_id = $1 AND ip_hash = $2
-         LIMIT 1`,
-        [id, ipHash]
-      );
+    const stickyResult = await client.query(
+      `SELECT link_index, url
+       FROM ip_assignments
+       WHERE set_id = $1 AND ip_hash = $2
+       LIMIT 1`,
+      [id, identityHash]
+    );
 
-      if (stickyResult.rows.length > 0) {
-        const stickyRow = stickyResult.rows[0];
-        const stickyIndex = Number(stickyRow.link_index || 0);
-        const stickyUrl = String(stickyRow.url || '');
+    if (stickyResult.rows.length > 0) {
+      const stickyRow = stickyResult.rows[0];
+      const stickyIndex = Number(stickyRow.link_index || 0);
+      const stickyUrl = String(stickyRow.url || '');
 
-        if (!stickyUrl || !/^https?:\/\//i.test(stickyUrl)) {
-          throw httpError(409, 'Stored URL is invalid');
-        }
-
-        setStickyAssignmentCache(id, ipHash, stickyIndex, stickyUrl);
-
-        if (asyncMetrics) {
-          scheduleAccessMetrics({
-            id,
-            index: stickyIndex,
-            url: stickyUrl,
-            now,
-            logId,
-            ua,
-            ref,
-            ipHash,
-            touchAssignment: true
-          });
-        } else {
-          await recordAccessMetrics({
-            id,
-            index: stickyIndex,
-            url: stickyUrl,
-            now,
-            logId,
-            ua,
-            ref,
-            ipHash,
-            touchAssignment: true
-          });
-        }
-
-        return { ok: true, id, index: stickyIndex, url: stickyUrl, nextUrl: stickyUrl, sticky: true };
+      if (!stickyUrl || !/^https?:\/\//i.test(stickyUrl)) {
+        throw httpError(409, 'Stored URL is invalid');
       }
+
+      setStickyAssignmentCache(id, identityHash, stickyIndex, stickyUrl);
+
+      if (asyncMetrics) {
+        scheduleAccessMetrics({
+          id,
+          index: stickyIndex,
+          url: stickyUrl,
+          now,
+          logId,
+          ua,
+          ref,
+          ipHash: identityHash,
+          touchAssignment: true
+        });
+      } else {
+        await recordAccessMetrics({
+          id,
+          index: stickyIndex,
+          url: stickyUrl,
+          now,
+          logId,
+          ua,
+          ref,
+          ipHash: identityHash,
+          touchAssignment: true
+        });
+      }
+
+      return { ok: true, id, index: stickyIndex, url: stickyUrl, nextUrl: stickyUrl, sticky: true, setCookie };
     }
 
     await client.query('BEGIN');
@@ -559,54 +568,52 @@ async function nextUrlInternal(rawId, meta, options = {}) {
       throw httpError(404, 'Link set not found');
     }
 
-    if (ipHash) {
-      const lockedStickyResult = await client.query(
-        `SELECT link_index, url
-         FROM ip_assignments
-         WHERE set_id = $1 AND ip_hash = $2
-         LIMIT 1`,
-        [id, ipHash]
-      );
+    const lockedStickyResult = await client.query(
+      `SELECT link_index, url
+       FROM ip_assignments
+       WHERE set_id = $1 AND ip_hash = $2
+       LIMIT 1`,
+      [id, identityHash]
+    );
 
-      if (lockedStickyResult.rows.length > 0) {
-        const stickyRow = lockedStickyResult.rows[0];
-        const stickyIndex = Number(stickyRow.link_index || 0);
-        const stickyUrl = String(stickyRow.url || '');
+    if (lockedStickyResult.rows.length > 0) {
+      const stickyRow = lockedStickyResult.rows[0];
+      const stickyIndex = Number(stickyRow.link_index || 0);
+      const stickyUrl = String(stickyRow.url || '');
 
-        if (!stickyUrl || !/^https?:\/\//i.test(stickyUrl)) {
-          throw httpError(409, 'Stored URL is invalid');
-        }
-        await client.query('COMMIT');
-        setStickyAssignmentCache(id, ipHash, stickyIndex, stickyUrl);
-
-        if (asyncMetrics) {
-          scheduleAccessMetrics({
-            id,
-            index: stickyIndex,
-            url: stickyUrl,
-            now,
-            logId,
-            ua,
-            ref,
-            ipHash,
-            touchAssignment: true
-          });
-        } else {
-          await recordAccessMetrics({
-            id,
-            index: stickyIndex,
-            url: stickyUrl,
-            now,
-            logId,
-            ua,
-            ref,
-            ipHash,
-            touchAssignment: true
-          });
-        }
-
-        return { ok: true, id, index: stickyIndex, url: stickyUrl, nextUrl: stickyUrl, sticky: true };
+      if (!stickyUrl || !/^https?:\/\//i.test(stickyUrl)) {
+        throw httpError(409, 'Stored URL is invalid');
       }
+      await client.query('COMMIT');
+      setStickyAssignmentCache(id, identityHash, stickyIndex, stickyUrl);
+
+      if (asyncMetrics) {
+        scheduleAccessMetrics({
+          id,
+          index: stickyIndex,
+          url: stickyUrl,
+          now,
+          logId,
+          ua,
+          ref,
+          ipHash: identityHash,
+          touchAssignment: true
+        });
+      } else {
+        await recordAccessMetrics({
+          id,
+          index: stickyIndex,
+          url: stickyUrl,
+          now,
+          logId,
+          ua,
+          ref,
+          ipHash: identityHash,
+          touchAssignment: true
+        });
+      }
+
+      return { ok: true, id, index: stickyIndex, url: stickyUrl, nextUrl: stickyUrl, sticky: true, setCookie };
     }
 
     const row = setResult.rows[0];
@@ -629,16 +636,14 @@ async function nextUrlInternal(rawId, meta, options = {}) {
       [nextIndex, now, id]
     );
 
-    if (ipHash) {
-      await client.query(
-        `INSERT INTO ip_assignments (set_id, ip_hash, link_index, url, assigned_at, last_clicked_at)
-         VALUES ($1, $2, $3, $4, $5, $5)
-         ON CONFLICT (set_id, ip_hash) DO UPDATE
-         SET last_clicked_at = EXCLUDED.last_clicked_at`,
-        [id, ipHash, currentIndex, url, now]
-      );
-      setStickyAssignmentCache(id, ipHash, currentIndex, url);
-    }
+    await client.query(
+      `INSERT INTO ip_assignments (set_id, ip_hash, link_index, url, assigned_at, last_clicked_at)
+       VALUES ($1, $2, $3, $4, $5, $5)
+       ON CONFLICT (set_id, ip_hash) DO UPDATE
+       SET last_clicked_at = EXCLUDED.last_clicked_at`,
+      [id, identityHash, currentIndex, url, now]
+    );
+    setStickyAssignmentCache(id, identityHash, currentIndex, url);
 
     await client.query('COMMIT');
 
@@ -651,7 +656,7 @@ async function nextUrlInternal(rawId, meta, options = {}) {
         logId,
         ua,
         ref,
-        ipHash,
+        ipHash: identityHash,
         touchAssignment: false,
         bumpClickCount: true
       });
@@ -664,13 +669,13 @@ async function nextUrlInternal(rawId, meta, options = {}) {
         logId,
         ua,
         ref,
-        ipHash,
+        ipHash: identityHash,
         touchAssignment: false,
         bumpClickCount: true
       });
     }
 
-    return { ok: true, id, index: currentIndex, url, nextUrl: url };
+    return { ok: true, id, index: currentIndex, url, nextUrl: url, setCookie };
   } catch (error) {
     if (client) {
       try {

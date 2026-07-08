@@ -1,3 +1,7 @@
+import stickyHelpers from '../../sticky.js';
+
+const { getStickyIdentity, buildStickyCookie } = stickyHelpers;
+
 const jsonHeaders = {
     'content-type': 'application/json; charset=utf-8'
 };
@@ -395,15 +399,18 @@ async function nextUrl(env, rawId, meta, options = {}) {
     const hashIp = options.hashIp !== false;
     const ua = typeof meta.ua === 'string' ? meta.ua.slice(0, 500) : '';
     const ref = typeof meta.ref === 'string' ? meta.ref.slice(0, 1000) : '';
-    const ipHash = hashIp ? await sha256(meta.ip || '') : '';
+    const stickyIdentity = getStickyIdentity({ cookieHeader: meta.cookie || '', ip: meta.ip || '' });
+    const resolvedCookieValue = stickyIdentity.cookieValue || `customer-${crypto.randomUUID()}`;
+    const identityHash = hashIp ? await sha256(resolvedCookieValue) : '';
+    const setCookie = stickyIdentity.cookieValue ? null : buildStickyCookie(resolvedCookieValue);
 
-    if (ipHash) {
+    if (identityHash) {
         const sticky = await env.DB.prepare(
             `SELECT link_index, url
              FROM ip_assignments
              WHERE set_id = ? AND ip_hash = ?
              LIMIT 1`
-        ).bind(id, ipHash).first();
+        ).bind(id, identityHash).first();
 
         if (sticky) {
             const stickyIndex = Number(sticky.link_index || 0);
@@ -424,10 +431,10 @@ async function nextUrl(env, rawId, meta, options = {}) {
                             ).bind(now, id),
                             env.DB.prepare(
                                 'UPDATE ip_assignments SET last_clicked_at = ? WHERE set_id = ? AND ip_hash = ?'
-                            ).bind(now, id, ipHash),
+                            ).bind(now, id, identityHash),
                             env.DB.prepare(
                                 'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-                            ).bind(logId, id, stickyIndex, stickyUrl, now, ua, ref, ipHash)
+                            ).bind(logId, id, stickyIndex, stickyUrl, now, ua, ref, identityHash)
                         ]);
                     } catch {
                         // Metrics writes should never block redirect responses.
@@ -440,10 +447,10 @@ async function nextUrl(env, rawId, meta, options = {}) {
                     ).bind(now, id),
                     env.DB.prepare(
                         'UPDATE ip_assignments SET last_clicked_at = ? WHERE set_id = ? AND ip_hash = ?'
-                    ).bind(now, id, ipHash),
+                    ).bind(now, id, identityHash),
                     env.DB.prepare(
                         'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-                    ).bind(logId, id, stickyIndex, stickyUrl, now, ua, ref, ipHash)
+                    ).bind(logId, id, stickyIndex, stickyUrl, now, ua, ref, identityHash)
                 ]);
             }
 
@@ -454,7 +461,8 @@ async function nextUrl(env, rawId, meta, options = {}) {
                 url: stickyUrl,
                 nextUrl: stickyUrl,
                 clicks: null,
-                sticky: true
+                sticky: true,
+                setCookie
             };
         }
     }
@@ -479,7 +487,7 @@ async function nextUrl(env, rawId, meta, options = {}) {
                 `INSERT INTO ip_assignments (set_id, ip_hash, link_index, url, assigned_at, last_clicked_at)
                  VALUES (?, ?, ?, ?, ?, ?)
                  ON CONFLICT(set_id, ip_hash) DO UPDATE SET last_clicked_at = excluded.last_clicked_at`
-            ).bind(id, ipHash, currentIndex, url, now, now)
+            ).bind(id, identityHash, currentIndex, url, now, now)
         ]);
 
         executionCtx.waitUntil((async () => {
@@ -488,7 +496,7 @@ async function nextUrl(env, rawId, meta, options = {}) {
                     bumpClickCountStmt,
                     env.DB.prepare(
                     'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-                    ).bind(logId, id, currentIndex, url, now, ua, ref, ipHash)
+                    ).bind(logId, id, currentIndex, url, now, ua, ref, identityHash)
                 ]);
             } catch {
                 // Log write failures should never block redirect responses.
@@ -502,10 +510,10 @@ async function nextUrl(env, rawId, meta, options = {}) {
                 `INSERT INTO ip_assignments (set_id, ip_hash, link_index, url, assigned_at, last_clicked_at)
                  VALUES (?, ?, ?, ?, ?, ?)
                  ON CONFLICT(set_id, ip_hash) DO UPDATE SET last_clicked_at = excluded.last_clicked_at`
-            ).bind(id, ipHash, currentIndex, url, now, now),
+            ).bind(id, identityHash, currentIndex, url, now, now),
             env.DB.prepare(
                 'INSERT INTO click_logs (log_id, set_id, link_index, url, clicked_at, ua, ref, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-            ).bind(logId, id, currentIndex, url, now, ua, ref, ipHash)
+            ).bind(logId, id, currentIndex, url, now, ua, ref, identityHash)
         ]);
     }
 
@@ -515,7 +523,8 @@ async function nextUrl(env, rawId, meta, options = {}) {
         index: currentIndex,
         url,
         nextUrl: url,
-        clicks: null
+        clicks: null,
+        setCookie
     };
 }
 
@@ -523,7 +532,8 @@ async function handleRedirect(rawId, request, env, executionCtx) {
     const result = await nextUrl(env, rawId, {
         ua: request.headers.get('user-agent') || '',
         ref: request.headers.get('referer') || '',
-        ip: request.headers.get('CF-Connecting-IP') || ''
+        ip: request.headers.get('CF-Connecting-IP') || '',
+        cookie: request.headers.get('cookie') || ''
     }, {
         asyncLog: true,
         executionCtx
@@ -532,6 +542,9 @@ async function handleRedirect(rawId, request, env, executionCtx) {
     const redirectResponse = Response.redirect(result.url, 302);
     const headers = new Headers(redirectResponse.headers);
     headers.set('cache-control', 'no-store');
+    if (result.setCookie) {
+        headers.set('set-cookie', result.setCookie);
+    }
 
     return new Response(null, {
         status: redirectResponse.status,
